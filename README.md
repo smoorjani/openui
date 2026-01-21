@@ -8,10 +8,10 @@ Stop juggling terminal windows. Manage Claude Code and OpenCode agents on an inf
 
 ```bash
 # Run directly
-npx @fallomai/openui
+npx @fallom/openui
 
 # Or with bun
-bunx openui
+bunx @fallom/openui
 ```
 
 ## What It Does
@@ -28,7 +28,7 @@ OpenUI gives you a visual workspace where each AI agent (Claude Code, OpenCode) 
 
 ## Usage
 
-1. Run `npx @fallomai/openui` in your project directory
+1. Run `npx @fallom/openui` in your project directory
 2. Browser opens automatically at `http://localhost:6969`
 3. Click "+" to spawn a new agent (Claude Code or OpenCode)
 4. Click any node to open its terminal
