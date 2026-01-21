@@ -1,0 +1,95 @@
+import { MessageSquare, WifiOff } from "lucide-react";
+import { AgentStatus } from "../../stores/useStore";
+
+const statusConfig: Record<AgentStatus, { label: string; color: string; animate?: boolean }> = {
+  starting: { label: "Starting", color: "#FBBF24", animate: true },
+  running: { label: "Running", color: "#22C55E", animate: true },
+  waiting_input: { label: "Needs Input", color: "#F97316", animate: false },
+  tool_calling: { label: "Tool Calling", color: "#8B5CF6", animate: true },
+  idle: { label: "Idle", color: "#6B7280", animate: false },
+  disconnected: { label: "Disconnected", color: "#EF4444", animate: false },
+  error: { label: "Error", color: "#EF4444", animate: false },
+};
+
+interface AgentNodeCardProps {
+  selected: boolean;
+  displayColor: string;
+  displayName: string;
+  Icon: any;
+  agentId: string;
+  status: AgentStatus;
+}
+
+export function AgentNodeCard({
+  selected,
+  displayColor,
+  displayName,
+  Icon,
+  agentId,
+  status,
+}: AgentNodeCardProps) {
+  const statusInfo = statusConfig[status] || statusConfig.idle;
+
+  return (
+    <div
+      className={`relative w-[180px] rounded-lg transition-all duration-200 cursor-pointer ${
+        selected ? "ring-1 ring-white/20" : ""
+      }`}
+      style={{
+        backgroundColor: "#262626",
+        boxShadow: selected
+          ? "0 4px 16px rgba(0, 0, 0, 0.4)"
+          : "0 2px 8px rgba(0, 0, 0, 0.3)",
+      }}
+    >
+      <div className="h-1 rounded-t-lg" style={{ backgroundColor: displayColor }} />
+
+      <div className="p-3">
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <div
+              className="w-8 h-8 rounded-md flex items-center justify-center flex-shrink-0"
+              style={{ backgroundColor: `${displayColor}20` }}
+            >
+              <Icon className="w-4 h-4" style={{ color: displayColor }} />
+            </div>
+            <div className="min-w-0">
+              <h3 className="text-sm font-medium text-white truncate">{displayName}</h3>
+              <p className="text-[10px] text-zinc-500 truncate">{agentId}</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-3 flex items-center gap-2">
+          <div className="relative flex items-center justify-center">
+            <div
+              className="w-2 h-2 rounded-full"
+              style={{ backgroundColor: statusInfo.color }}
+            />
+            {statusInfo.animate && (
+              <div
+                className="absolute w-2 h-2 rounded-full animate-ping"
+                style={{ backgroundColor: statusInfo.color, opacity: 0.5 }}
+              />
+            )}
+          </div>
+          <span className="text-[10px] text-zinc-500">{statusInfo.label}</span>
+
+          {status === "waiting_input" && (
+            <div className="ml-auto flex items-center gap-1 px-1.5 py-0.5 rounded bg-orange-500/10 border border-orange-500/20">
+              <MessageSquare className="w-2.5 h-2.5 text-orange-500" />
+              <span className="text-[9px] text-orange-500 font-medium">Input</span>
+            </div>
+          )}
+
+          {status === "disconnected" && (
+            <div className="ml-auto flex items-center gap-1 px-1.5 py-0.5 rounded bg-red-500/10 border border-red-500/20">
+              <WifiOff className="w-2.5 h-2.5 text-red-500" />
+              <span className="text-[9px] text-red-500 font-medium">Offline</span>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
