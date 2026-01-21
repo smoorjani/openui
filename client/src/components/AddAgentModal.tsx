@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, Sparkles, Code, Cpu, FolderOpen, Terminal } from "lucide-react";
+import { X, Sparkles, Code, Cpu, FolderOpen, Terminal, Plus, Minus } from "lucide-react";
 import { useStore, Agent } from "../stores/useStore";
 
 const iconMap: Record<string, any> = {
@@ -25,6 +25,7 @@ export function AddAgentModal() {
   const [customName, setCustomName] = useState("");
   const [commandArgs, setCommandArgs] = useState("");
   const [isCreating, setIsCreating] = useState(false);
+  const [count, setCount] = useState(1);
 
   // Reset form when modal opens
   const handleClose = () => {
@@ -33,6 +34,7 @@ export function AddAgentModal() {
     setCwd("");
     setCustomName("");
     setCommandArgs("");
+    setCount(1);
   };
 
   const handleCreate = async () => {
@@ -41,57 +43,69 @@ export function AddAgentModal() {
     setIsCreating(true);
 
     try {
-      const nodeId = `node-${Date.now()}`;
       const workingDir = cwd || launchCwd;
       const fullCommand = commandArgs
         ? `${selectedAgent.command} ${commandArgs}`
         : selectedAgent.command;
 
-      const res = await fetch("/api/sessions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      // Create multiple agents in a grid
+      const GRID_COLS = 5;
+      const SPACING_X = 220;
+      const SPACING_Y = 200;
+      const startNodeCount = nodes.length;
+
+      for (let i = 0; i < count; i++) {
+        const nodeId = `node-${Date.now()}-${i}`;
+        const agentName = count > 1
+          ? `${customName || selectedAgent.name} ${i + 1}`
+          : (customName || selectedAgent.name);
+
+        const res = await fetch("/api/sessions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            agentId: selectedAgent.id,
+            agentName: selectedAgent.name,
+            command: fullCommand,
+            cwd: workingDir,
+            nodeId,
+            customName: count > 1 ? agentName : (customName || undefined),
+          }),
+        });
+
+        const { sessionId } = await res.json();
+
+        // Calculate position in grid
+        const totalIndex = startNodeCount + i;
+        const x = 100 + (totalIndex % GRID_COLS) * SPACING_X;
+        const y = 100 + Math.floor(totalIndex / GRID_COLS) * SPACING_Y;
+
+        addNode({
+          id: nodeId,
+          type: "agent",
+          position: { x, y },
+          data: {
+            label: agentName,
+            agentId: selectedAgent.id,
+            color: selectedAgent.color,
+            icon: selectedAgent.icon,
+            sessionId,
+          },
+        });
+
+        addSession(nodeId, {
+          id: nodeId,
+          sessionId,
           agentId: selectedAgent.id,
           agentName: selectedAgent.name,
           command: fullCommand,
-          cwd: workingDir,
-          nodeId,
-          customName: customName || undefined,
-        }),
-      });
-
-      const { sessionId } = await res.json();
-
-      // Calculate position
-      const nodeCount = nodes.length;
-      const x = 100 + (nodeCount % 5) * 220;
-      const y = 100 + Math.floor(nodeCount / 5) * 150;
-
-      addNode({
-        id: nodeId,
-        type: "agent",
-        position: { x, y },
-        data: {
-          label: customName || selectedAgent.name,
-          agentId: selectedAgent.id,
           color: selectedAgent.color,
-          icon: selectedAgent.icon,
-          sessionId,
-        },
-      });
-
-      addSession(nodeId, {
-        id: nodeId,
-        sessionId,
-        agentId: selectedAgent.id,
-        agentName: selectedAgent.name,
-        command: fullCommand,
-        color: selectedAgent.color,
-        createdAt: new Date().toISOString(),
-        cwd: workingDir,
-        status: "starting",
-        customName: customName || undefined,
-      });
+          createdAt: new Date().toISOString(),
+          cwd: workingDir,
+          status: "starting",
+          customName: count > 1 ? agentName : (customName || undefined),
+        });
+      }
 
       handleClose();
     } catch (error) {
@@ -165,16 +179,43 @@ export function AddAgentModal() {
                   </div>
                 </div>
 
-                {/* Custom name */}
-                <div className="space-y-2">
-                  <label className="text-xs text-zinc-500">Name (optional)</label>
-                  <input
-                    type="text"
-                    value={customName}
-                    onChange={(e) => setCustomName(e.target.value)}
-                    placeholder={selectedAgent?.name || "My Agent"}
-                    className="w-full px-3 py-2 rounded-md bg-canvas border border-canvas-lighter text-white text-sm placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors"
-                  />
+                {/* Custom name & count */}
+                <div className="flex gap-3">
+                  <div className="flex-1 space-y-2">
+                    <label className="text-xs text-zinc-500">Name (optional)</label>
+                    <input
+                      type="text"
+                      value={customName}
+                      onChange={(e) => setCustomName(e.target.value)}
+                      placeholder={selectedAgent?.name || "My Agent"}
+                      className="w-full px-3 py-2 rounded-md bg-canvas border border-canvas-lighter text-white text-sm placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors"
+                    />
+                  </div>
+                  <div className="w-28 space-y-2">
+                    <label className="text-xs text-zinc-500">Count</label>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => setCount(Math.max(1, count - 1))}
+                        className="w-8 h-9 rounded-md bg-canvas border border-canvas-lighter text-zinc-400 hover:text-white hover:bg-canvas-lighter transition-colors flex items-center justify-center"
+                      >
+                        <Minus className="w-3 h-3" />
+                      </button>
+                      <input
+                        type="number"
+                        value={count}
+                        onChange={(e) => setCount(Math.max(1, Math.min(20, parseInt(e.target.value) || 1)))}
+                        min={1}
+                        max={20}
+                        className="w-10 h-9 rounded-md bg-canvas border border-canvas-lighter text-white text-sm text-center focus:outline-none focus:border-zinc-500 transition-colors [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                      />
+                      <button
+                        onClick={() => setCount(Math.min(20, count + 1))}
+                        className="w-8 h-9 rounded-md bg-canvas border border-canvas-lighter text-zinc-400 hover:text-white hover:bg-canvas-lighter transition-colors flex items-center justify-center"
+                      >
+                        <Plus className="w-3 h-3" />
+                      </button>
+                    </div>
+                  </div>
                 </div>
 
                 {/* Command arguments */}
@@ -226,7 +267,7 @@ export function AddAgentModal() {
                   disabled={!selectedAgent || isCreating}
                   className="px-4 py-1.5 rounded-md text-sm font-medium text-canvas bg-white hover:bg-zinc-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
-                  {isCreating ? "Creating..." : "Create"}
+                  {isCreating ? "Creating..." : count > 1 ? `Create ${count} Agents` : "Create"}
                 </button>
               </div>
             </div>

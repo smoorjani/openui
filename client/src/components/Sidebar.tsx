@@ -568,10 +568,19 @@ export function Sidebar() {
               <div className="flex items-center gap-2 text-xs">
                 <Folder className="w-3 h-3 text-zinc-600 flex-shrink-0" />
                 <span className="text-zinc-500">Directory</span>
-                <span className="text-zinc-400 font-mono ml-auto truncate max-w-[200px]" title={session.cwd}>
-                  {session.cwd}
+                <span className="text-zinc-400 font-mono ml-auto truncate max-w-[180px]" title={session.cwd}>
+                  {session.cwd.split('/').slice(-2).join('/')}
                 </span>
               </div>
+              {session.metrics?.model && (
+                <div className="flex items-center gap-2 text-xs">
+                  <Activity className="w-3 h-3 text-zinc-600 flex-shrink-0" />
+                  <span className="text-zinc-500">Model</span>
+                  <span className="text-cyan-400 font-mono ml-auto">
+                    {session.metrics.model}
+                  </span>
+                </div>
+              )}
             </div>
           </div>
         </motion.div>

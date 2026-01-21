@@ -57,6 +57,8 @@ export const AgentNode = ({ id, data, selected }: NodeProps) => {
           Icon={Icon}
           agentId={nodeData.agentId}
           status={status}
+          metrics={session?.metrics}
+          cwd={session?.cwd}
         />
       </motion.div>
 

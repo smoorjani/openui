@@ -1,5 +1,5 @@
-import { MessageSquare, WifiOff } from "lucide-react";
-import { AgentStatus } from "../../stores/useStore";
+import { MessageSquare, WifiOff, FolderGit2 } from "lucide-react";
+import { AgentStatus, ClaudeMetrics } from "../../stores/useStore";
 
 const statusConfig: Record<AgentStatus, { label: string; color: string; animate?: boolean }> = {
   starting: { label: "Starting", color: "#FBBF24", animate: true },
@@ -18,6 +18,8 @@ interface AgentNodeCardProps {
   Icon: any;
   agentId: string;
   status: AgentStatus;
+  metrics?: ClaudeMetrics;
+  cwd?: string;
 }
 
 export function AgentNodeCard({
@@ -27,8 +29,13 @@ export function AgentNodeCard({
   Icon,
   agentId,
   status,
+  metrics,
+  cwd,
 }: AgentNodeCardProps) {
   const statusInfo = statusConfig[status] || statusConfig.idle;
+
+  // Extract directory name from cwd
+  const dirName = cwd ? cwd.split("/").pop() || cwd : null;
 
   return (
     <div
@@ -89,6 +96,52 @@ export function AgentNodeCard({
             </div>
           )}
         </div>
+
+        {/* Directory */}
+        {dirName && (
+          <div className="mt-2 flex items-center gap-1.5 text-[9px] text-zinc-500">
+            <FolderGit2 className="w-3 h-3 flex-shrink-0" />
+            <span className="truncate">{dirName}</span>
+          </div>
+        )}
+
+        {/* Metrics for Claude agents */}
+        {metrics && agentId === "claude" && (
+          <div className="mt-2 pt-2 border-t border-zinc-700/50 space-y-1.5">
+            {/* Model & Cost row */}
+            <div className="flex items-center justify-between text-[9px]">
+              <span className="text-cyan-400 font-medium truncate">{metrics.model}</span>
+              <span className="text-blue-400">${metrics.cost.toFixed(4)}</span>
+            </div>
+
+            {/* Context bar */}
+            <div className="flex items-center gap-1.5">
+              <span className="text-[8px] text-zinc-500 w-6">ctx</span>
+              <div className="flex-1 h-1.5 bg-zinc-700 rounded-full overflow-hidden">
+                <div
+                  className="h-full rounded-full transition-all"
+                  style={{
+                    width: `${Math.min(metrics.contextPercent, 100)}%`,
+                    backgroundColor: metrics.contextPercent > 80 ? "#EF4444" : metrics.contextPercent > 50 ? "#FBBF24" : "#22C55E"
+                  }}
+                />
+              </div>
+              <span className="text-[8px] text-zinc-400 w-6 text-right">{Math.round(metrics.contextPercent)}%</span>
+            </div>
+
+            {/* Lines & Tokens row */}
+            <div className="flex items-center justify-between text-[8px]">
+              <span>
+                <span className="text-green-400">+{metrics.linesAdded}</span>
+                {" "}
+                <span className="text-red-400">-{metrics.linesRemoved}</span>
+              </span>
+              <span className="text-zinc-500">
+                {Math.round((metrics.inputTokens + metrics.outputTokens) / 1000)}k tok
+              </span>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
