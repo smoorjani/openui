@@ -74,6 +74,7 @@ export interface PersistedNode {
   customColor?: string;
   notes?: string;
   position: { x: number; y: number };
+  claudeSessionId?: string;  // Claude Code's internal session ID for --resume
 }
 
 export interface PersistedCategory {

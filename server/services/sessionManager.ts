@@ -44,8 +44,20 @@ export function injectPluginDir(command: string, agentId: string): string {
   // Check if command already has --plugin-dir
   if (command.includes("--plugin-dir")) return command;
 
-  // Insert --plugin-dir after 'claude'
+  // Handle both "claude" and "llm agent claude" command formats
   const parts = command.split(/\s+/);
+
+  // Check for "llm agent claude" format
+  if (parts[0] === "llm" && parts[1] === "agent" && parts[2] === "claude") {
+    // Insert --plugin-dir after 'claude' (index 2)
+    parts.splice(3, 0, `--plugin-dir`, pluginDir);
+    const finalCmd = parts.join(" ");
+    log(`\x1b[38;5;141m[plugin]\x1b[0m Injecting plugin-dir: ${pluginDir}`);
+    log(`\x1b[38;5;141m[plugin]\x1b[0m Final command: ${finalCmd}`);
+    return finalCmd;
+  }
+
+  // Check for plain "claude" format
   if (parts[0] === "claude") {
     // Use the path directly without quotes - shell will handle it
     parts.splice(1, 0, `--plugin-dir`, pluginDir);
@@ -411,6 +423,7 @@ export function restoreSessions() {
       notes: node.notes,
       nodeId: node.nodeId,
       isRestored: true,
+      claudeSessionId: node.claudeSessionId,  // Restore Claude session ID for --resume
     };
 
     sessions.set(node.sessionId, session);

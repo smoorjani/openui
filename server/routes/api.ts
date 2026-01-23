@@ -220,7 +220,11 @@ apiRoutes.post("/sessions/:sessionId/restart", async (c) => {
   const ptyProcess = spawn("/bin/bash", [], {
     name: "xterm-256color",
     cwd: session.cwd,
-    env: { ...process.env, TERM: "xterm-256color" },
+    env: {
+      ...process.env,
+      TERM: "xterm-256color",
+      OPENUI_SESSION_ID: sessionId,  // Pass session ID for plugin hooks
+    },
     rows: 30,
     cols: 120,
   });
@@ -254,7 +258,20 @@ apiRoutes.post("/sessions/:sessionId/restart", async (c) => {
     }
   });
 
-  const finalCommand = injectPluginDir(session.command, session.agentId);
+  // Build the command with resume flag if we have a Claude session ID
+  let finalCommand = injectPluginDir(session.command, session.agentId);
+
+  // For Claude sessions with a known claudeSessionId, use --resume to restore the specific session
+  if (session.agentId === "claude" && session.claudeSessionId && !finalCommand.includes("--resume")) {
+    const resumeArg = `--resume ${session.claudeSessionId}`;
+    if (finalCommand.includes("llm agent claude")) {
+      finalCommand = finalCommand.replace("llm agent claude", `llm agent claude ${resumeArg}`);
+    } else if (finalCommand.startsWith("claude")) {
+      finalCommand = finalCommand.replace(/^claude(\s|$)/, `claude ${resumeArg}$1`);
+    }
+    log(`\x1b[38;5;141m[session]\x1b[0m Resuming Claude session: ${session.claudeSessionId}`);
+  }
+
   setTimeout(() => {
     ptyProcess.write(`${finalCommand}\r`);
   }, 300);
