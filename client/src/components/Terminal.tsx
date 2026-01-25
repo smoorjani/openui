@@ -38,7 +38,7 @@ export function Terminal({ sessionId, color, nodeId }: TerminalProps) {
       fontSize: 12,
       fontFamily: '"JetBrains Mono", "Fira Code", "SF Mono", Menlo, monospace',
       fontWeight: "400",
-      lineHeight: 1.4,
+      lineHeight: 1.2,
       letterSpacing: 0,
       theme: {
         background: "#0d0d0d",
@@ -74,10 +74,6 @@ export function Terminal({ sessionId, color, nodeId }: TerminalProps) {
     term.loadAddon(webLinksAddon);
 
     term.open(terminalRef.current);
-    
-    // Reset all terminal attributes before receiving buffered content
-    term.write("\x1b[0m\x1b[?25h");
-    
     setTimeout(() => fitAddon.fit(), 50);
 
     xtermRef.current = term;
@@ -106,13 +102,20 @@ export function Terminal({ sessionId, color, nodeId }: TerminalProps) {
         try {
           const msg = JSON.parse(event.data);
           if (msg.type === "output") {
-            // On first message (buffered history), reset terminal state first
+            term.write(msg.data);
+            // After first message, send resize to sync PTY cursor position
             if (isFirstMessage) {
               isFirstMessage = false;
-              // Clear screen, reset attributes, move cursor home
-              term.write("\x1b[2J\x1b[H\x1b[0m");
+              setTimeout(() => {
+                if (ws?.readyState === WebSocket.OPEN && xtermRef.current) {
+                  ws.send(JSON.stringify({
+                    type: "resize",
+                    cols: xtermRef.current.cols,
+                    rows: xtermRef.current.rows
+                  }));
+                }
+              }, 100);
             }
-            term.write(msg.data);
           } else if (msg.type === "status") {
             // Handle status updates from plugin hooks
             updateSession(nodeId, {

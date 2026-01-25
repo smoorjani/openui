@@ -33,7 +33,7 @@ export function ShellTerminal({ sessionId, cwd, color }: ShellTerminalProps) {
       fontSize: 12,
       fontFamily: '"JetBrains Mono", "Fira Code", "SF Mono", Menlo, monospace',
       fontWeight: "400",
-      lineHeight: 1.4,
+      lineHeight: 1.2,
       letterSpacing: 0,
       theme: {
         background: "#0d0d0d",
