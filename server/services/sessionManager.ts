@@ -47,8 +47,8 @@ export function injectPluginDir(command: string, agentId: string): string {
   // Handle "llm agent claude" command format
   const parts = command.split(/\s+/);
 
-  if (parts[0] === "llm" && parts[1] === "agent" && parts[2] === "session") {
-    // Insert --plugin-dir after 'session' (index 2)
+  if (parts[0] === "llm" && parts[1] === "agent" && parts[2] === "claude") {
+    // Insert --plugin-dir after 'claude' (index 2)
     parts.splice(3, 0, `--plugin-dir`, pluginDir);
     const finalCmd = parts.join(" ");
     log(`\x1b[38;5;141m[plugin]\x1b[0m Injecting plugin-dir: ${pluginDir}`);

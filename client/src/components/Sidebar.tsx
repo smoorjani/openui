@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   X,
@@ -73,6 +73,39 @@ export function Sidebar() {
   const [terminalKey, setTerminalKey] = useState(0);
   const [activeTab, setActiveTab] = useState<TerminalTab>("claude");
   const [shellKey, setShellKey] = useState(0);
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    const saved = localStorage.getItem("openui-sidebar-width");
+    return saved ? parseInt(saved, 10) : 512;
+  });
+  const [isResizing, setIsResizing] = useState(false);
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsResizing(true);
+  }, []);
+
+  useEffect(() => {
+    if (!isResizing) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const newWidth = window.innerWidth - e.clientX;
+      const clampedWidth = Math.max(400, Math.min(newWidth, window.innerWidth - 100));
+      setSidebarWidth(clampedWidth);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizing(false);
+      localStorage.setItem("openui-sidebar-width", sidebarWidth.toString());
+    };
+
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+
+    return () => {
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [isResizing, sidebarWidth]);
 
   // Reset edit state when session changes (but NOT when nodes change)
   useEffect(() => {
@@ -116,8 +149,14 @@ export function Sidebar() {
           animate={{ x: 0, opacity: 1 }}
           exit={{ x: "100%", opacity: 0 }}
           transition={{ type: "spring", stiffness: 400, damping: 40 }}
-          className="fixed right-0 top-14 bottom-0 w-full max-w-lg z-50 flex flex-col bg-canvas-dark border-l border-border"
+          className="fixed right-0 top-14 bottom-0 z-50 flex flex-col bg-canvas-dark border-l border-border"
+          style={{ width: sidebarWidth }}
         >
+          {/* Resize handle */}
+          <div
+            onMouseDown={handleMouseDown}
+            className={`absolute left-0 top-0 bottom-0 w-1 cursor-ew-resize hover:bg-zinc-500 transition-colors ${isResizing ? "bg-zinc-500" : ""}`}
+          />
           {/* Header */}
           <div className="flex-shrink-0 px-4 py-3 border-b border-border">
             <div className="flex items-center gap-3">
