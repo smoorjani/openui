@@ -1,12 +1,14 @@
 import { useState } from "react";
-import { Plus, Folder, Settings } from "lucide-react";
+import { Plus, Folder, Settings, GitBranch } from "lucide-react";
 import { motion } from "framer-motion";
 import { useStore } from "../stores/useStore";
 import { SettingsModal } from "./SettingsModal";
+import { WorktreeModal } from "./WorktreeModal";
 
 export function Header() {
   const { setAddAgentModalOpen, sessions, launchCwd } = useStore();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [worktreeOpen, setWorktreeOpen] = useState(false);
 
   return (
     <header className="h-14 px-4 flex items-center justify-between border-b border-border bg-canvas-dark">
@@ -45,6 +47,15 @@ export function Header() {
           <Settings className="w-4 h-4" />
         </button>
         <motion.button
+          onClick={() => setWorktreeOpen(true)}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface border border-border text-zinc-300 text-sm font-medium hover:bg-surface-active hover:text-white transition-colors"
+          whileHover={{ scale: 1.02 }}
+          whileTap={{ scale: 0.98 }}
+        >
+          <GitBranch className="w-4 h-4" />
+          New Worktree
+        </motion.button>
+        <motion.button
           onClick={() => setAddAgentModalOpen(true)}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-white text-canvas text-sm font-medium hover:bg-zinc-100 transition-colors"
           whileHover={{ scale: 1.02 }}
@@ -56,6 +67,7 @@ export function Header() {
       </div>
 
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <WorktreeModal open={worktreeOpen} onClose={() => setWorktreeOpen(false)} />
     </header>
   );
 }

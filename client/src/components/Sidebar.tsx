@@ -2,7 +2,6 @@ import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   X,
-  Terminal as TerminalIcon,
   Clock,
   Folder,
   Edit3,
@@ -16,9 +15,14 @@ import {
   Brain,
   Wand2,
   GitBranch,
+  MessageSquare,
+  Terminal as TerminalIcon,
 } from "lucide-react";
 import { useStore, AgentStatus } from "../stores/useStore";
 import { Terminal } from "./Terminal";
+import { ShellTerminal } from "./ShellTerminal";
+
+type TerminalTab = "claude" | "shell";
 
 const statusConfig: Record<AgentStatus, { label: string; color: string }> = {
   running: { label: "Running", color: "#22C55E" },
@@ -67,6 +71,8 @@ export function Sidebar() {
   const [editColor, setEditColor] = useState("");
   const [editIcon, setEditIcon] = useState("");
   const [terminalKey, setTerminalKey] = useState(0);
+  const [activeTab, setActiveTab] = useState<TerminalTab>("claude");
+  const [shellKey, setShellKey] = useState(0);
 
   // Reset edit state when session changes (but NOT when nodes change)
   useEffect(() => {
@@ -81,6 +87,8 @@ export function Sidebar() {
     setIsEditing(false);
     // Force terminal recreation when session changes
     setTerminalKey(k => k + 1);
+    setShellKey(k => k + 1);
+    setActiveTab("claude");
   }, [session?.sessionId]); // Removed nodes and selectedNodeId to prevent closing on updates
 
   const handleClose = () => {
@@ -343,9 +351,29 @@ export function Sidebar() {
           {/* Terminal */}
           <div className="flex-1 flex flex-col min-h-0">
             <div className="flex-shrink-0 px-4 py-2 border-b border-border flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <TerminalIcon className="w-3.5 h-3.5 text-zinc-500" />
-                <span className="text-xs text-zinc-500">Terminal</span>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setActiveTab("claude")}
+                  className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs transition-colors ${
+                    activeTab === "claude"
+                      ? "bg-surface-active text-white"
+                      : "text-zinc-500 hover:text-zinc-300"
+                  }`}
+                >
+                  <MessageSquare className="w-3 h-3" />
+                  Claude Log
+                </button>
+                <button
+                  onClick={() => setActiveTab("shell")}
+                  className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs transition-colors ${
+                    activeTab === "shell"
+                      ? "bg-surface-active text-white"
+                      : "text-zinc-500 hover:text-zinc-300"
+                  }`}
+                >
+                  <TerminalIcon className="w-3 h-3" />
+                  Shell
+                </button>
               </div>
               <div className="flex items-center gap-1">
                 <div className="w-2.5 h-2.5 rounded-full bg-[#FF5F56]" />
@@ -355,12 +383,21 @@ export function Sidebar() {
             </div>
 
             <div className="flex-1 min-h-0 bg-[#0d0d0d]">
-              <Terminal
-                key={`${session.sessionId}-${terminalKey}`}
-                sessionId={session.sessionId}
-                color={displayColor}
-                nodeId={selectedNodeId!}
-              />
+              {activeTab === "claude" ? (
+                <Terminal
+                  key={`${session.sessionId}-${terminalKey}`}
+                  sessionId={session.sessionId}
+                  color={displayColor}
+                  nodeId={selectedNodeId!}
+                />
+              ) : (
+                <ShellTerminal
+                  key={`shell-${session.sessionId}-${shellKey}`}
+                  sessionId={session.sessionId}
+                  cwd={session.cwd}
+                  color={displayColor}
+                />
+              )}
             </div>
 
           </div>

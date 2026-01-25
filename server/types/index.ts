@@ -62,6 +62,16 @@ export interface LinearConfig {
   ticketPromptTemplate?: string;
 }
 
+export interface WorktreeRepo {
+  name: string;
+  path: string;
+  baseBranch: string;
+}
+
+export interface WorktreeConfig {
+  worktreeRepos: WorktreeRepo[];
+}
+
 export interface PersistedNode {
   nodeId: string;
   sessionId: string;
@@ -102,4 +112,6 @@ export interface Agent {
 
 export interface WebSocketData {
   sessionId: string;
+  isShell?: boolean;
+  cwd?: string;
 }

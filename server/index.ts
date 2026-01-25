@@ -2,10 +2,14 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { serveStatic } from "hono/bun";
 import type { ServerWebSocket } from "bun";
+import { spawn } from "bun-pty";
 import { apiRoutes } from "./routes/api";
 import { sessions, restoreSessions } from "./services/sessionManager";
 import { saveState } from "./services/persistence";
 import type { WebSocketData } from "./types";
+
+// Track shell terminals separately from agent sessions
+const shellTerminals = new Map<string, { pty: any; clients: Set<ServerWebSocket<WebSocketData>> }>();
 
 const app = new Hono();
 const PORT = Number(process.env.PORT) || 6968;
@@ -41,11 +45,59 @@ Bun.serve<WebSocketData>({
       return new Response("WebSocket upgrade failed", { status: 400 });
     }
 
+    // Shell terminal WebSocket - independent bash shell
+    if (url.pathname === "/ws/shell") {
+      const sessionId = url.searchParams.get("sessionId");
+      const cwd = url.searchParams.get("cwd") || process.cwd();
+      if (!sessionId) return new Response("Session ID required", { status: 400 });
+
+      const shellId = `shell-${sessionId}`;
+      const upgraded = server.upgrade(req, { data: { sessionId: shellId, isShell: true, cwd } });
+      if (upgraded) return undefined;
+      return new Response("WebSocket upgrade failed", { status: 400 });
+    }
+
     return app.fetch(req);
   },
   websocket: {
     open(ws) {
-      const { sessionId } = ws.data;
+      const { sessionId, isShell, cwd } = ws.data;
+
+      // Handle shell terminal connections
+      if (isShell) {
+        log(`\x1b[38;5;245m[ws]\x1b[0m Shell connected: ${sessionId}`);
+
+        let shell = shellTerminals.get(sessionId);
+        if (!shell) {
+          // Create new shell PTY
+          const ptyProcess = spawn("/bin/zsh", [], {
+            name: "xterm-256color",
+            cwd: cwd || process.cwd(),
+            env: {
+              ...process.env,
+              TERM: "xterm-256color",
+            },
+            rows: 30,
+            cols: 120,
+          });
+
+          shell = { pty: ptyProcess, clients: new Set() };
+          shellTerminals.set(sessionId, shell);
+
+          ptyProcess.onData((data: string) => {
+            for (const client of shell!.clients) {
+              if (client.readyState === 1) {
+                client.send(JSON.stringify({ type: "output", data }));
+              }
+            }
+          });
+        }
+
+        shell.clients.add(ws);
+        return;
+      }
+
+      // Handle agent session connections
       const session = sessions.get(sessionId);
 
       if (!session) {
@@ -62,7 +114,7 @@ Bun.serve<WebSocketData>({
       } else if (session.isRestored || !session.pty) {
         ws.send(JSON.stringify({
           type: "output",
-          data: "\x1b[38;5;245mSession was disconnected.\r\nClick \"Spawn Fresh\" to start a new session.\x1b[0m\r\n"
+          data: "\x1b[38;5;245mSession was disconnected.\r\nClick \"Resume\" to continue or \"New Session\" to start fresh.\x1b[0m\r\n"
         }));
       }
 
@@ -73,7 +125,30 @@ Bun.serve<WebSocketData>({
       }));
     },
     message(ws, message) {
-      const { sessionId } = ws.data;
+      const { sessionId, isShell } = ws.data;
+
+      // Handle shell terminal messages
+      if (isShell) {
+        const shell = shellTerminals.get(sessionId);
+        if (!shell) return;
+
+        try {
+          const msg = JSON.parse(message.toString());
+          switch (msg.type) {
+            case "input":
+              shell.pty.write(msg.data);
+              break;
+            case "resize":
+              shell.pty.resize(msg.cols, msg.rows);
+              break;
+          }
+        } catch (e) {
+          if (!QUIET) console.error("Error processing shell message:", e);
+        }
+        return;
+      }
+
+      // Handle agent session messages
       const session = sessions.get(sessionId);
       if (!session) return;
 
@@ -97,7 +172,26 @@ Bun.serve<WebSocketData>({
       }
     },
     close(ws) {
-      const { sessionId } = ws.data;
+      const { sessionId, isShell } = ws.data;
+
+      // Handle shell terminal disconnection
+      if (isShell) {
+        const shell = shellTerminals.get(sessionId);
+        if (shell) {
+          shell.clients.delete(ws);
+          log(`\x1b[38;5;245m[ws]\x1b[0m Shell disconnected: ${sessionId}`);
+
+          // Clean up shell if no more clients
+          if (shell.clients.size === 0) {
+            shell.pty.kill();
+            shellTerminals.delete(sessionId);
+            log(`\x1b[38;5;245m[ws]\x1b[0m Shell terminated: ${sessionId}`);
+          }
+        }
+        return;
+      }
+
+      // Handle agent session disconnection
       const session = sessions.get(sessionId);
       if (session) {
         session.clients.delete(ws);

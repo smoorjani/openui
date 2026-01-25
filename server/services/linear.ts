@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
-import type { LinearTicket, LinearConfig } from "../types";
+import type { LinearTicket, LinearConfig, WorktreeRepo, WorktreeConfig } from "../types";
 
 const LAUNCH_CWD = process.env.LAUNCH_CWD || process.cwd();
 const CONFIG_FILE = join(LAUNCH_CWD, ".openui", "config.json");
@@ -331,4 +331,54 @@ export async function getCurrentUser(apiKey: string) {
   `;
   const data = await linearQuery(apiKey, query);
   return data.viewer;
+}
+
+// Default worktree configuration
+const DEFAULT_WORKTREE_CONFIG: WorktreeConfig = {
+  worktreeRepos: [
+    {
+      name: "MLflow",
+      path: "/Users/samraj.moorjani/personal_repos/mlflow",
+      baseBranch: "master"
+    }
+  ]
+};
+
+// Load worktree config from config.json
+export function loadWorktreeConfig(): WorktreeConfig {
+  try {
+    if (existsSync(CONFIG_FILE)) {
+      const fileConfig = JSON.parse(readFileSync(CONFIG_FILE, "utf-8"));
+      if (fileConfig.worktreeRepos && Array.isArray(fileConfig.worktreeRepos)) {
+        return { worktreeRepos: fileConfig.worktreeRepos };
+      }
+    }
+  } catch (e) {
+    console.error("Failed to load worktree config:", e);
+  }
+  return DEFAULT_WORKTREE_CONFIG;
+}
+
+// Save worktree config to config.json (preserving other config)
+export function saveWorktreeConfig(worktreeRepos: WorktreeRepo[]): void {
+  try {
+    const dir = join(LAUNCH_CWD, ".openui");
+    if (!existsSync(dir)) {
+      require("fs").mkdirSync(dir, { recursive: true });
+    }
+
+    let existingConfig = {};
+    if (existsSync(CONFIG_FILE)) {
+      existingConfig = JSON.parse(readFileSync(CONFIG_FILE, "utf-8"));
+    }
+
+    const updatedConfig = {
+      ...existingConfig,
+      worktreeRepos
+    };
+
+    writeFileSync(CONFIG_FILE, JSON.stringify(updatedConfig, null, 2));
+  } catch (e) {
+    console.error("Failed to save worktree config:", e);
+  }
 }

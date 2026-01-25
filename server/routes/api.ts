@@ -11,6 +11,8 @@ import {
   fetchTicketByIdentifier,
   validateApiKey,
   getCurrentUser,
+  loadWorktreeConfig,
+  saveWorktreeConfig,
 } from "../services/linear";
 
 const LAUNCH_CWD = process.env.LAUNCH_CWD || process.cwd();
@@ -68,26 +70,10 @@ apiRoutes.get("/agents", (c) => {
     {
       id: "claude",
       name: "Claude Code",
-      command: "claude",
+      command: "llm agent claude",
       description: "Anthropic's official CLI for Claude",
       color: "#F97316",
       icon: "sparkles",
-    },
-    {
-      id: "opencode",
-      name: "OpenCode",
-      command: "opencode",
-      description: "Open source AI coding assistant",
-      color: "#22C55E",
-      icon: "code",
-    },
-    {
-      id: "ralph",
-      name: "Ralph",
-      command: "",
-      description: "Autonomous dev loop (ralph, ralph-setup, ralph-import)",
-      color: "#8B5CF6",
-      icon: "brain",
     },
   ];
   return c.json(agents);
@@ -217,7 +203,7 @@ apiRoutes.post("/sessions/:sessionId/restart", async (c) => {
   if (session.pty) return c.json({ error: "Session already running" }, 400);
 
   const { spawn } = await import("bun-pty");
-  const ptyProcess = spawn("/bin/bash", [], {
+  const ptyProcess = spawn("/bin/zsh", [], {
     name: "xterm-256color",
     cwd: session.cwd,
     env: {
@@ -258,17 +244,20 @@ apiRoutes.post("/sessions/:sessionId/restart", async (c) => {
     }
   });
 
+  // Normalize old "claude" commands to new "llm agent claude" format
+  let command = session.command;
+  if (session.agentId === "claude" && !command.includes("llm agent claude")) {
+    command = "llm agent claude";
+    log(`\x1b[38;5;141m[session]\x1b[0m Normalized command to: ${command}`);
+  }
+
   // Build the command with resume flag if we have a Claude session ID
-  let finalCommand = injectPluginDir(session.command, session.agentId);
+  let finalCommand = injectPluginDir(command, session.agentId);
 
   // For Claude sessions with a known claudeSessionId, use --resume to restore the specific session
   if (session.agentId === "claude" && session.claudeSessionId && !finalCommand.includes("--resume")) {
     const resumeArg = `--resume ${session.claudeSessionId}`;
-    if (finalCommand.includes("llm agent claude")) {
-      finalCommand = finalCommand.replace("llm agent claude", `llm agent claude ${resumeArg}`);
-    } else if (finalCommand.startsWith("claude")) {
-      finalCommand = finalCommand.replace(/^claude(\s|$)/, `claude ${resumeArg}$1`);
-    }
+    finalCommand = finalCommand.replace("llm agent claude", `llm agent claude ${resumeArg}`);
     log(`\x1b[38;5;141m[session]\x1b[0m Resuming Claude session: ${session.claudeSessionId}`);
   }
 
@@ -512,6 +501,27 @@ apiRoutes.post("/linear/config", async (c) => {
   if (body.ticketPromptTemplate !== undefined) config.ticketPromptTemplate = body.ticketPromptTemplate;
 
   saveConfig(config);
+  return c.json({ success: true });
+});
+
+// ============ Worktree Configuration ============
+
+// Get worktree repos config
+apiRoutes.get("/worktree/config", (c) => {
+  const config = loadWorktreeConfig();
+  return c.json(config);
+});
+
+// Save worktree repos config
+apiRoutes.post("/worktree/config", async (c) => {
+  const body = await c.req.json();
+  const { worktreeRepos } = body;
+
+  if (!Array.isArray(worktreeRepos)) {
+    return c.json({ error: "worktreeRepos must be an array" }, 400);
+  }
+
+  saveWorktreeConfig(worktreeRepos);
   return c.json({ success: true });
 });
 

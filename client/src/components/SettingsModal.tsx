@@ -1,7 +1,13 @@
 import { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, Key, Check, AlertCircle, Loader2, ExternalLink } from "lucide-react";
+import { X, Key, Check, AlertCircle, Loader2, ExternalLink, GitBranch, Plus, Trash2, Folder, ChevronRight } from "lucide-react";
+
+interface WorktreeRepo {
+  name: string;
+  path: string;
+  baseBranch: string;
+}
 
 interface SettingsModalProps {
   open: boolean;
@@ -18,6 +24,15 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [ticketPromptTemplate, setTicketPromptTemplate] = useState("");
   const [isSaving, setIsSaving] = useState(false);
 
+  const [worktreeRepos, setWorktreeRepos] = useState<WorktreeRepo[]>([]);
+  const [showAddRepo, setShowAddRepo] = useState(false);
+  const [newRepoName, setNewRepoName] = useState("");
+  const [newRepoPath, setNewRepoPath] = useState("");
+  const [newRepoBaseBranch, setNewRepoBaseBranch] = useState("main");
+  const [browsePath, setBrowsePath] = useState("");
+  const [browseDirectories, setBrowseDirectories] = useState<{ name: string; path: string }[]>([]);
+  const [showBrowser, setShowBrowser] = useState(false);
+
   // Load existing config
   useEffect(() => {
     if (open) {
@@ -30,8 +45,87 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           setTicketPromptTemplate(config.ticketPromptTemplate || "");
         })
         .catch(console.error);
+
+      fetch("/api/worktree/config")
+        .then((res) => res.json())
+        .then((config) => {
+          setWorktreeRepos(config.worktreeRepos || []);
+        })
+        .catch(console.error);
+    } else {
+      setShowAddRepo(false);
+      setShowBrowser(false);
+      resetNewRepoForm();
     }
   }, [open]);
+
+  const resetNewRepoForm = () => {
+    setNewRepoName("");
+    setNewRepoPath("");
+    setNewRepoBaseBranch("main");
+  };
+
+  const handleBrowse = async (path?: string) => {
+    try {
+      const res = await fetch(`/api/browse?path=${encodeURIComponent(path || "~")}`);
+      const data = await res.json();
+      setBrowsePath(data.current);
+      setBrowseDirectories(data.directories || []);
+      setShowBrowser(true);
+    } catch (e) {
+      console.error("Failed to browse directories:", e);
+    }
+  };
+
+  const handleSelectDirectory = (path: string) => {
+    setNewRepoPath(path);
+    const name = path.split("/").pop() || "Repo";
+    if (!newRepoName) {
+      setNewRepoName(name.charAt(0).toUpperCase() + name.slice(1));
+    }
+    setShowBrowser(false);
+  };
+
+  const handleAddRepo = async () => {
+    if (!newRepoName.trim() || !newRepoPath.trim()) return;
+
+    const newRepo: WorktreeRepo = {
+      name: newRepoName.trim(),
+      path: newRepoPath.trim(),
+      baseBranch: newRepoBaseBranch.trim() || "main",
+    };
+
+    const updatedRepos = [...worktreeRepos, newRepo];
+    setWorktreeRepos(updatedRepos);
+
+    try {
+      await fetch("/api/worktree/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ worktreeRepos: updatedRepos }),
+      });
+    } catch (e) {
+      console.error("Failed to save worktree repos:", e);
+    }
+
+    setShowAddRepo(false);
+    resetNewRepoForm();
+  };
+
+  const handleDeleteRepo = async (index: number) => {
+    const updatedRepos = worktreeRepos.filter((_, i) => i !== index);
+    setWorktreeRepos(updatedRepos);
+
+    try {
+      await fetch("/api/worktree/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ worktreeRepos: updatedRepos }),
+      });
+    } catch (e) {
+      console.error("Failed to save worktree repos:", e);
+    }
+  };
 
   const handleValidate = async () => {
     if (!apiKey.trim()) return;
@@ -131,7 +225,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
               </div>
 
               {/* Content */}
-              <div className="p-5 space-y-6">
+              <div className="p-5 space-y-6 max-h-[60vh] overflow-y-auto">
                 {/* Linear Integration */}
                 <div>
                   <div className="flex items-center gap-2 mb-3">
@@ -279,6 +373,159 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                       className="w-full px-3 py-2 rounded-md bg-canvas border border-border text-white text-sm placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors resize-none font-mono"
                     />
                   </div>
+                </div>
+
+                {/* Worktree Repositories */}
+                <div>
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <div className="w-6 h-6 rounded bg-orange-500/20 flex items-center justify-center">
+                        <GitBranch className="w-4 h-4 text-orange-400" />
+                      </div>
+                      <h3 className="text-sm font-medium text-white">Worktree Repositories</h3>
+                    </div>
+                    {!showAddRepo && (
+                      <button
+                        onClick={() => setShowAddRepo(true)}
+                        className="flex items-center gap-1 px-2 py-1 rounded text-xs text-zinc-400 hover:text-white hover:bg-canvas transition-colors"
+                      >
+                        <Plus className="w-3 h-3" />
+                        Add
+                      </button>
+                    )}
+                  </div>
+
+                  <p className="text-xs text-zinc-500 mb-3">
+                    Repositories available for quick worktree creation via "New Worktree" button.
+                  </p>
+
+                  {/* Existing repos list */}
+                  {worktreeRepos.length > 0 ? (
+                    <div className="space-y-2 mb-3">
+                      {worktreeRepos.map((repo, index) => (
+                        <div
+                          key={index}
+                          className="flex items-center gap-2 px-3 py-2 rounded-md bg-canvas border border-border group"
+                        >
+                          <Folder className="w-4 h-4 text-zinc-500" />
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm text-white truncate">{repo.name}</div>
+                            <div className="text-xs text-zinc-600 font-mono truncate">{repo.path}</div>
+                          </div>
+                          <span className="text-xs text-zinc-500 px-1.5 py-0.5 rounded bg-surface">
+                            {repo.baseBranch}
+                          </span>
+                          <button
+                            onClick={() => handleDeleteRepo(index)}
+                            className="p-1 rounded text-zinc-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : !showAddRepo ? (
+                    <div className="text-center py-4 text-xs text-zinc-600">
+                      No repositories configured
+                    </div>
+                  ) : null}
+
+                  {/* Add new repo form */}
+                  {showAddRepo && (
+                    <div className="space-y-3 p-3 rounded-md bg-canvas border border-border">
+                      <div>
+                        <label className="text-xs text-zinc-500 block mb-1.5">Name</label>
+                        <input
+                          type="text"
+                          value={newRepoName}
+                          onChange={(e) => setNewRepoName(e.target.value)}
+                          placeholder="MLflow"
+                          className="w-full px-3 py-2 rounded-md bg-surface border border-border text-white text-sm placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="text-xs text-zinc-500 block mb-1.5">Path</label>
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            value={newRepoPath}
+                            onChange={(e) => setNewRepoPath(e.target.value)}
+                            placeholder="/path/to/repo"
+                            className="flex-1 px-3 py-2 rounded-md bg-surface border border-border text-white text-sm placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors font-mono"
+                          />
+                          <button
+                            onClick={() => handleBrowse(newRepoPath || undefined)}
+                            className="px-3 py-2 rounded-md bg-surface border border-border text-zinc-400 hover:text-white hover:border-zinc-500 transition-colors"
+                          >
+                            <Folder className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Directory browser */}
+                      {showBrowser && (
+                        <div className="border border-border rounded-md bg-surface max-h-40 overflow-y-auto">
+                          <div className="px-3 py-2 border-b border-border text-xs text-zinc-500 font-mono truncate bg-canvas sticky top-0">
+                            {browsePath}
+                          </div>
+                          {browsePath !== "/" && (
+                            <button
+                              onClick={() => handleBrowse(browsePath.split("/").slice(0, -1).join("/") || "/")}
+                              className="w-full px-3 py-1.5 text-left text-sm text-zinc-400 hover:bg-canvas flex items-center gap-2"
+                            >
+                              <ChevronRight className="w-3 h-3 rotate-180" />
+                              ..
+                            </button>
+                          )}
+                          {browseDirectories.map((dir) => (
+                            <button
+                              key={dir.path}
+                              onClick={() => handleSelectDirectory(dir.path)}
+                              className="w-full px-3 py-1.5 text-left text-sm text-zinc-300 hover:bg-canvas flex items-center gap-2"
+                            >
+                              <Folder className="w-3 h-3 text-zinc-500" />
+                              {dir.name}
+                            </button>
+                          ))}
+                          {browseDirectories.length === 0 && (
+                            <div className="px-3 py-2 text-xs text-zinc-600">No subdirectories</div>
+                          )}
+                        </div>
+                      )}
+
+                      <div>
+                        <label className="text-xs text-zinc-500 block mb-1.5">Base branch</label>
+                        <input
+                          type="text"
+                          value={newRepoBaseBranch}
+                          onChange={(e) => setNewRepoBaseBranch(e.target.value)}
+                          placeholder="main"
+                          className="w-full px-3 py-2 rounded-md bg-surface border border-border text-white text-sm placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors"
+                        />
+                      </div>
+
+                      <div className="flex justify-end gap-2 pt-1">
+                        <button
+                          onClick={() => {
+                            setShowAddRepo(false);
+                            setShowBrowser(false);
+                            resetNewRepoForm();
+                          }}
+                          className="px-3 py-1.5 rounded-md text-xs text-zinc-400 hover:text-white hover:bg-surface transition-colors"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={handleAddRepo}
+                          disabled={!newRepoName.trim() || !newRepoPath.trim()}
+                          className="px-3 py-1.5 rounded-md text-xs font-medium bg-orange-600 text-white hover:bg-orange-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                        >
+                          Add Repository
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 

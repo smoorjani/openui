@@ -3,9 +3,6 @@ import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   X,
-  Sparkles,
-  Code,
-  Cpu,
   FolderOpen,
   Terminal,
   Plus,
@@ -18,18 +15,11 @@ import {
   Home,
   ArrowUp,
   Github,
-  Brain,
   RefreshCw,
 } from "lucide-react";
 import { useReactFlow } from "@xyflow/react";
 import { useStore, Agent, AgentSession } from "../stores/useStore";
 
-const iconMap: Record<string, any> = {
-  sparkles: Sparkles,
-  code: Code,
-  cpu: Cpu,
-  brain: Brain,
-};
 
 interface LinearTicket {
   id: string;
@@ -200,16 +190,19 @@ export function NewSessionModal({
   // Reset form when modal opens (only once per open)
   useEffect(() => {
     if (open && !initialized) {
+      // Auto-select Claude Code agent
+      const claudeAgent = agents.find((a) => a.id === "claude");
+
       if (existingSession) {
         // Pre-fill from existing session
         const agent = agents.find((a) => a.id === existingSession.agentId);
-        setSelectedAgent(agent || null);
+        setSelectedAgent(agent || claudeAgent || null);
         setCwd(existingSession.cwd);
         setCustomName(existingSession.customName || "");
         setCommandArgs("");
         setCount(1);
       } else {
-        setSelectedAgent(null);
+        setSelectedAgent(claudeAgent || null);
         setCwd("");
         setCustomName("");
         setCommandArgs("");
@@ -622,39 +615,6 @@ export function NewSessionModal({
 
                 {/* Content */}
                 <div className="flex-1 overflow-y-auto p-5 space-y-4">
-                  {/* Agent selection (only for new agents) */}
-                  {!isReplacing && (
-                    <div className="space-y-2">
-                      <label className="text-xs text-zinc-500">Select Agent</label>
-                      <div className="grid grid-cols-2 gap-2">
-                        {agents.map((agent) => {
-                          const Icon = iconMap[agent.icon] || Cpu;
-                          const isSelected = selectedAgent?.id === agent.id;
-                          return (
-                            <button
-                              key={agent.id}
-                              onClick={() => setSelectedAgent(agent)}
-                              className={`relative p-3 rounded-md text-left transition-all border ${
-                                isSelected
-                                  ? "border-white/20 bg-surface-active"
-                                  : "border-border hover:border-border hover:bg-surface-hover"
-                              }`}
-                            >
-                              <div
-                                className="w-8 h-8 rounded-md flex items-center justify-center mb-2"
-                                style={{ backgroundColor: `${agent.color}20` }}
-                              >
-                                <Icon className="w-4 h-4" style={{ color: agent.color }} />
-                              </div>
-                              <h3 className="text-sm font-medium text-white">{agent.name}</h3>
-                              <p className="text-[10px] text-zinc-500 mt-0.5">{agent.description}</p>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-
                   {/* Linear ticket selection */}
                   {activeTab === "linear" && (
                     <div className="space-y-3">
