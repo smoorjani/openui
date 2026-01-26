@@ -139,7 +139,7 @@ export function Sidebar() {
 
   const displayColor = editColor || session?.customColor || session?.color || "#888";
   const statusInfo = statusConfig[session?.status || "idle"];
-  const isDisconnected = session?.status === "disconnected";
+  const isDisconnected = session?.status === "disconnected" || session?.isRestored;
 
   return (
     <AnimatePresence>
@@ -421,22 +421,24 @@ export function Sidebar() {
               </div>
             </div>
 
-            <div className="flex-1 min-h-0 bg-[#0d0d0d]">
-              {activeTab === "claude" ? (
+            <div className="flex-1 min-h-0 bg-[#0d0d0d] relative">
+              {/* Render both terminals but only show active one - preserves shell state */}
+              <div className={`absolute inset-0 ${activeTab === "claude" ? "" : "invisible"}`}>
                 <Terminal
                   key={`${session.sessionId}-${terminalKey}`}
                   sessionId={session.sessionId}
                   color={displayColor}
                   nodeId={selectedNodeId!}
                 />
-              ) : (
+              </div>
+              <div className={`absolute inset-0 ${activeTab === "shell" ? "" : "invisible"}`}>
                 <ShellTerminal
                   key={`shell-${session.sessionId}-${shellKey}`}
                   sessionId={session.sessionId}
                   cwd={session.cwd}
                   color={displayColor}
                 />
-              )}
+              </div>
             </div>
 
           </div>

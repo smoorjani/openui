@@ -228,6 +228,20 @@ apiRoutes.post("/sessions/:sessionId/restart", async (c) => {
     session.recentOutputSize = Math.max(0, session.recentOutputSize - 50);
   }, 500);
 
+  // Build the command - try with session ID first if available
+  let command = "llm agent claude";
+  let finalCommand = injectPluginDir(command, session.agentId);
+
+  // Try to resume with specific session ID if we have one
+  const hasSessionId = session.agentId === "claude" && session.claudeSessionId;
+  if (hasSessionId) {
+    finalCommand = finalCommand.replace("llm agent claude", `llm agent claude --resume ${session.claudeSessionId}`);
+    log(`\x1b[38;5;141m[session]\x1b[0m Attempting to resume Claude session: ${session.claudeSessionId}`);
+  }
+
+  // Watch for "No conversation found" error and retry without session ID
+  let retryWithoutId = false;
+
   ptyProcess.onData((data: string) => {
     session.outputBuffer.push(data);
     if (session.outputBuffer.length > 1000) {
@@ -242,24 +256,59 @@ apiRoutes.post("/sessions/:sessionId/restart", async (c) => {
         client.send(JSON.stringify({ type: "output", data }));
       }
     }
+
+    // Check for invalid session ID error and retry without it
+    if (hasSessionId && !retryWithoutId && data.includes("No conversation found with session ID")) {
+      retryWithoutId = true;
+      log(`\x1b[38;5;141m[session]\x1b[0m Session ID invalid, restarting without --resume`);
+
+      // Clear the session ID since it's invalid
+      session.claudeSessionId = undefined;
+
+      // Kill current PTY and restart without session ID
+      setTimeout(async () => {
+        if (session.pty) {
+          session.pty.kill();
+        }
+
+        const newPty = spawn("/bin/zsh", [], {
+          name: "xterm-256color",
+          cwd: session.cwd,
+          env: {
+            ...process.env,
+            TERM: "xterm-256color",
+            OPENUI_SESSION_ID: sessionId,
+          },
+          rows: 30,
+          cols: 120,
+        });
+
+        session.pty = newPty;
+        session.outputBuffer = [];
+
+        newPty.onData((newData: string) => {
+          session.outputBuffer.push(newData);
+          if (session.outputBuffer.length > 1000) {
+            session.outputBuffer.shift();
+          }
+          session.lastOutputTime = Date.now();
+          for (const client of session.clients) {
+            if (client.readyState === 1) {
+              client.send(JSON.stringify({ type: "output", data: newData }));
+            }
+          }
+        });
+
+        // Run without session ID
+        const freshCommand = injectPluginDir("llm agent claude", session.agentId);
+        setTimeout(() => {
+          newPty.write(`${freshCommand}\r`);
+        }, 300);
+
+        log(`\x1b[38;5;141m[session]\x1b[0m Restarted without session ID`);
+      }, 500);
+    }
   });
-
-  // Normalize old "claude" commands to new "llm agent claude" format
-  let command = session.command;
-  if (session.agentId === "claude" && !command.includes("llm agent claude")) {
-    command = "llm agent claude";
-    log(`\x1b[38;5;141m[session]\x1b[0m Normalized command to: ${command}`);
-  }
-
-  // Build the command with resume flag if we have a Claude session ID
-  let finalCommand = injectPluginDir(command, session.agentId);
-
-  // For Claude sessions with a known claudeSessionId, use --resume to restore the specific session
-  if (session.agentId === "claude" && session.claudeSessionId && !finalCommand.includes("--resume")) {
-    const resumeArg = `--resume ${session.claudeSessionId}`;
-    finalCommand = finalCommand.replace("llm agent claude", `llm agent claude ${resumeArg}`);
-    log(`\x1b[38;5;141m[session]\x1b[0m Resuming Claude session: ${session.claudeSessionId}`);
-  }
 
   setTimeout(() => {
     ptyProcess.write(`${finalCommand}\r`);
@@ -372,7 +421,7 @@ apiRoutes.post("/status-update", async (c) => {
         clearTimeout(session.permissionTimeout);
         session.permissionTimeout = undefined;
       }
-      // Keep currentTool to show what just ran
+      session.currentTool = undefined;
     } else {
       // For other statuses, clear tool tracking if not actively using tools
       if (status !== "tool_calling" && status !== "running") {
