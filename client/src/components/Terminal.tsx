@@ -141,6 +141,17 @@ export function Terminal({ sessionId, color, nodeId }: TerminalProps) {
     // Small delay to let server session be ready
     const connectTimeout = setTimeout(connectWs, 100);
 
+    // Handle Shift+Enter to insert newline
+    term.attachCustomKeyEventHandler((event) => {
+      if (event.type === 'keydown' && event.key === 'Enter' && event.shiftKey) {
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ type: "input", data: "\n" }));
+        }
+        return false; // Prevent default handling
+      }
+      return true; // Allow default handling for other keys
+    });
+
     term.onData((data) => {
       if (ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: "input", data }));
