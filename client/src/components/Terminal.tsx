@@ -143,11 +143,13 @@ export function Terminal({ sessionId, color, nodeId }: TerminalProps) {
 
     // Handle Shift+Enter to insert newline
     term.attachCustomKeyEventHandler((event) => {
-      if (event.type === 'keydown' && event.key === 'Enter' && event.shiftKey) {
-        if (wsRef.current?.readyState === WebSocket.OPEN) {
+      if (event.key === 'Enter' && event.shiftKey) {
+        // Send newline only on keydown, but block ALL event types (keydown, keypress, keyup)
+        // to prevent double newlines from keypress also being processed
+        if (event.type === 'keydown' && wsRef.current?.readyState === WebSocket.OPEN) {
           wsRef.current.send(JSON.stringify({ type: "input", data: "\n" }));
         }
-        return false; // Prevent default handling
+        return false; // Block all Shift+Enter events
       }
       return true; // Allow default handling for other keys
     });

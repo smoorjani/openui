@@ -72,7 +72,6 @@ export function Sidebar() {
   const [editIcon, setEditIcon] = useState("");
   const [terminalKey, setTerminalKey] = useState(0);
   const [activeTab, setActiveTab] = useState<TerminalTab>("claude");
-  const [shellKey, setShellKey] = useState(0);
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const saved = localStorage.getItem("openui-sidebar-width");
     return saved ? parseInt(saved, 10) : 512;
@@ -118,10 +117,11 @@ export function Sidebar() {
       setEditIcon(typeof nodeIcon === 'string' ? nodeIcon : "cpu");
     }
     setIsEditing(false);
-    // Force terminal recreation when session changes
-    setTerminalKey(k => k + 1);
-    setShellKey(k => k + 1);
+    // Switch back to Claude tab when changing sessions
     setActiveTab("claude");
+    // Note: terminalKey is NOT incremented here - the Terminal key already includes sessionId
+    // so switching sessions naturally creates the correct terminal. Shell terminals persist
+    // because we render all of them and just show/hide with invisible class.
   }, [session?.sessionId]); // Removed nodes and selectedNodeId to prevent closing on updates
 
   const handleClose = () => {
@@ -431,14 +431,19 @@ export function Sidebar() {
                   nodeId={selectedNodeId!}
                 />
               </div>
-              <div className={`absolute inset-0 ${activeTab === "shell" ? "" : "invisible"}`}>
-                <ShellTerminal
-                  key={`shell-${session.sessionId}-${shellKey}`}
-                  sessionId={session.sessionId}
-                  cwd={session.cwd}
-                  color={displayColor}
-                />
-              </div>
+              {/* Render shell terminals for ALL sessions to persist state across switches */}
+              {Array.from(sessions.entries()).map(([, sess]) => (
+                <div
+                  key={`shell-container-${sess.sessionId}`}
+                  className={`absolute inset-0 ${activeTab === "shell" && session?.sessionId === sess.sessionId ? "" : "invisible"}`}
+                >
+                  <ShellTerminal
+                    sessionId={sess.sessionId}
+                    cwd={sess.cwd}
+                    color={sess.customColor || sess.color}
+                  />
+                </div>
+              ))}
             </div>
 
           </div>
