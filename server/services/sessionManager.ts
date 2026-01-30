@@ -5,6 +5,7 @@ import { join, basename } from "path";
 import { homedir } from "os";
 import type { Session } from "../types";
 import { loadBuffer } from "./persistence";
+import { removeWindow } from "./tmuxShell";
 
 const QUIET = !!process.env.OPENUI_QUIET;
 const log = QUIET ? () => {} : console.log.bind(console);
@@ -423,20 +424,65 @@ export function deleteSession(sessionId: string) {
 
   if (session.pty) session.pty.kill();
 
+  // Remove tmux window for this session
+  removeWindow(sessionId);
+
   // If this was a worktree session, remove the worktree
   if (session.worktreePath && session.originalCwd) {
     try {
-      log(`\x1b[38;5;141m[session]\x1b[0m Removing worktree: ${session.worktreePath}`);
+      log(`\x1b[38;5;141m[session]\x1b[0m Removing worktree: ${session.worktreePath} from ${session.originalCwd}`);
+      // Use absolute path for worktree removal
       const result = spawnSync(["git", "worktree", "remove", "-f", session.worktreePath], {
         cwd: session.originalCwd,
         stdout: "pipe",
         stderr: "pipe",
       });
       if (result.exitCode !== 0) {
-        logError(`\x1b[38;5;196m[session]\x1b[0m Failed to remove worktree: ${result.stderr?.toString()}`);
+        const stderr = result.stderr?.toString() || "";
+        logError(`\x1b[38;5;196m[session]\x1b[0m Failed to remove worktree: ${stderr}`);
+        // If it failed, try with prune first
+        log(`\x1b[38;5;141m[session]\x1b[0m Trying git worktree prune first...`);
+        spawnSync(["git", "worktree", "prune"], { cwd: session.originalCwd, stdout: "pipe", stderr: "pipe" });
+        // Retry removal
+        const retryResult = spawnSync(["git", "worktree", "remove", "-f", session.worktreePath], {
+          cwd: session.originalCwd,
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        if (retryResult.exitCode !== 0) {
+          logError(`\x1b[38;5;196m[session]\x1b[0m Retry also failed: ${retryResult.stderr?.toString()}`);
+        } else {
+          log(`\x1b[38;5;141m[session]\x1b[0m Worktree removed after prune`);
+        }
+      } else {
+        log(`\x1b[38;5;141m[session]\x1b[0m Worktree removed successfully`);
       }
     } catch (e) {
       logError(`\x1b[38;5;196m[session]\x1b[0m Error removing worktree:`, e);
+    }
+  } else if (session.cwd && session.cwd.includes("-worktrees/")) {
+    // Fallback: Try to detect worktree from cwd path
+    log(`\x1b[38;5;141m[session]\x1b[0m Attempting worktree cleanup from cwd: ${session.cwd}`);
+    try {
+      // Extract main repo path from worktree path (e.g., /path/repo-worktrees/branch -> /path/repo)
+      const worktreesMatch = session.cwd.match(/^(.+)-worktrees\//);
+      if (worktreesMatch) {
+        const mainRepo = worktreesMatch[1];
+        log(`\x1b[38;5;141m[session]\x1b[0m Detected main repo: ${mainRepo}`);
+        spawnSync(["git", "worktree", "prune"], { cwd: mainRepo, stdout: "pipe", stderr: "pipe" });
+        const result = spawnSync(["git", "worktree", "remove", "-f", session.cwd], {
+          cwd: mainRepo,
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        if (result.exitCode === 0) {
+          log(`\x1b[38;5;141m[session]\x1b[0m Worktree removed via fallback`);
+        } else {
+          logError(`\x1b[38;5;196m[session]\x1b[0m Fallback removal failed: ${result.stderr?.toString()}`);
+        }
+      }
+    } catch (e) {
+      logError(`\x1b[38;5;196m[session]\x1b[0m Fallback worktree removal error:`, e);
     }
   }
 
@@ -461,6 +507,8 @@ export function restoreSessions() {
       agentName: node.agentName,
       command: node.command,
       cwd: node.cwd,
+      originalCwd: node.originalCwd,      // Restore for worktree cleanup
+      worktreePath: node.worktreePath,    // Restore for worktree cleanup
       gitBranch: gitBranch || undefined,
       createdAt: node.createdAt,
       clients: new Set(),

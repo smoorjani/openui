@@ -422,7 +422,7 @@ export function Sidebar() {
             </div>
 
             <div className="flex-1 min-h-0 bg-[#0d0d0d] relative">
-              {/* Render both terminals but only show active one - preserves shell state */}
+              {/* Render both terminals but only show active one */}
               <div className={`absolute inset-0 ${activeTab === "claude" ? "" : "invisible"}`}>
                 <Terminal
                   key={`${session.sessionId}-${terminalKey}`}
@@ -431,19 +431,14 @@ export function Sidebar() {
                   nodeId={selectedNodeId!}
                 />
               </div>
-              {/* Render shell terminals for ALL sessions to persist state across switches */}
-              {Array.from(sessions.entries()).map(([, sess]) => (
-                <div
-                  key={`shell-container-${sess.sessionId}`}
-                  className={`absolute inset-0 ${activeTab === "shell" && session?.sessionId === sess.sessionId ? "" : "invisible"}`}
-                >
-                  <ShellTerminal
-                    sessionId={sess.sessionId}
-                    cwd={sess.cwd}
-                    color={sess.customColor || sess.color}
-                  />
-                </div>
-              ))}
+              {/* Single ShellTerminal - tmux handles window switching on server */}
+              <div className={`absolute inset-0 ${activeTab === "shell" ? "" : "invisible"}`}>
+                <ShellTerminal
+                  sessionId={session.sessionId}
+                  cwd={session.cwd}
+                  color={displayColor}
+                />
+              </div>
             </div>
 
           </div>

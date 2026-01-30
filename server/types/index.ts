@@ -79,6 +79,8 @@ export interface PersistedNode {
   agentName: string;
   command: string;
   cwd: string;
+  originalCwd?: string;  // Mother repo path when using worktrees
+  worktreePath?: string; // Full path to worktree for cleanup
   createdAt: string;
   customName?: string;
   customColor?: string;

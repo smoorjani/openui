@@ -17,9 +17,20 @@ export function ShellTerminal({ sessionId, cwd, color }: ShellTerminalProps) {
   const wsRef = useRef<WebSocket | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const mountedRef = useRef(false);
+  const reconnectAttemptRef = useRef(0);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const currentSessionIdRef = useRef(sessionId);
+
+  // Update current session ref and send switch command
+  useEffect(() => {
+    currentSessionIdRef.current = sessionId;
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: "switch", sessionId, cwd }));
+    }
+  }, [sessionId, cwd]);
 
   useEffect(() => {
-    if (!terminalRef.current || !sessionId) return;
+    if (!terminalRef.current) return;
 
     if (mountedRef.current) return;
     mountedRef.current = true;
@@ -77,19 +88,18 @@ export function ShellTerminal({ sessionId, cwd, color }: ShellTerminalProps) {
     fitAddonRef.current = fitAddon;
 
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${protocol}//${window.location.host}/ws/shell?sessionId=${sessionId}&cwd=${encodeURIComponent(cwd)}`;
-
-    let ws: WebSocket | null = null;
 
     const connectWs = () => {
       if (!mountedRef.current) return;
 
-      ws = new WebSocket(wsUrl);
+      const wsUrl = `${protocol}//${window.location.host}/ws/shell?sessionId=${currentSessionIdRef.current}&cwd=${encodeURIComponent(cwd)}`;
+      const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
       ws.onopen = () => {
+        reconnectAttemptRef.current = 0;
         if (xtermRef.current) {
-          ws?.send(JSON.stringify({ type: "resize", cols: xtermRef.current.cols, rows: xtermRef.current.rows }));
+          ws.send(JSON.stringify({ type: "resize", cols: xtermRef.current.cols, rows: xtermRef.current.rows }));
         }
       };
 
@@ -99,13 +109,27 @@ export function ShellTerminal({ sessionId, cwd, color }: ShellTerminalProps) {
           if (msg.type === "output") {
             term.write(msg.data);
           }
-        } catch (e) {
+        } catch {
           term.write(event.data);
         }
       };
 
       ws.onerror = () => {};
-      ws.onclose = () => {};
+
+      ws.onclose = () => {
+        if (!mountedRef.current) return;
+
+        // Exponential backoff reconnection
+        const attempt = reconnectAttemptRef.current;
+        const delay = Math.min(1000 * Math.pow(2, attempt), 30000);
+        reconnectAttemptRef.current = attempt + 1;
+
+        reconnectTimeoutRef.current = setTimeout(() => {
+          if (mountedRef.current) {
+            connectWs();
+          }
+        }, delay);
+      };
     };
 
     const connectTimeout = setTimeout(connectWs, 100);
@@ -113,19 +137,17 @@ export function ShellTerminal({ sessionId, cwd, color }: ShellTerminalProps) {
     // Handle Shift+Enter to insert newline
     term.attachCustomKeyEventHandler((event) => {
       if (event.key === 'Enter' && event.shiftKey) {
-        // Send newline only on keydown, but block ALL event types (keydown, keypress, keyup)
-        // to prevent double newlines from keypress also being processed
         if (event.type === 'keydown' && wsRef.current?.readyState === WebSocket.OPEN) {
           wsRef.current.send(JSON.stringify({ type: "input", data: "\n" }));
         }
-        return false; // Block all Shift+Enter events
+        return false;
       }
       return true;
     });
 
     term.onData((data) => {
-      if (ws?.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "input", data }));
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: "input", data }));
       }
     });
 
@@ -134,8 +156,8 @@ export function ShellTerminal({ sessionId, cwd, color }: ShellTerminalProps) {
         if (fitAddonRef.current) {
           fitAddonRef.current.fit();
         }
-        if (ws?.readyState === WebSocket.OPEN && xtermRef.current) {
-          ws.send(JSON.stringify({
+        if (wsRef.current?.readyState === WebSocket.OPEN && xtermRef.current) {
+          wsRef.current.send(JSON.stringify({
             type: "resize",
             cols: xtermRef.current.cols,
             rows: xtermRef.current.rows
@@ -149,16 +171,18 @@ export function ShellTerminal({ sessionId, cwd, color }: ShellTerminalProps) {
     return () => {
       mountedRef.current = false;
       clearTimeout(connectTimeout);
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
       resizeObserver.disconnect();
-      ws?.close();
+      wsRef.current?.close();
       term.dispose();
     };
-  }, [sessionId, cwd, color]);
+  }, [color, cwd]);
 
   const handleRestart = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: "restart" }));
-      // Clear the terminal
       if (xtermRef.current) {
         xtermRef.current.clear();
       }

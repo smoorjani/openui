@@ -2,14 +2,22 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { serveStatic } from "hono/bun";
 import type { ServerWebSocket } from "bun";
-import { spawn } from "bun-pty";
 import { apiRoutes } from "./routes/api";
 import { sessions, restoreSessions } from "./services/sessionManager";
 import { saveState } from "./services/persistence";
 import type { WebSocketData } from "./types";
-
-// Track shell terminals separately from agent sessions
-const shellTerminals = new Map<string, { pty: any; clients: Set<ServerWebSocket<WebSocketData>> }>();
+import {
+  initializeTmux,
+  ensureWindow,
+  switchWindow,
+  addClient,
+  removeClient,
+  writeInput,
+  resize,
+  restartCurrentWindow,
+  cleanupTmux,
+  tmuxManager,
+} from "./services/tmuxShell";
 
 const app = new Hono();
 const PORT = Number(process.env.PORT) || 6968;
@@ -45,14 +53,21 @@ Bun.serve<WebSocketData>({
       return new Response("WebSocket upgrade failed", { status: 400 });
     }
 
-    // Shell terminal WebSocket - independent bash shell
+    // Shell terminal WebSocket - tmux-based shell
     if (url.pathname === "/ws/shell") {
       const sessionId = url.searchParams.get("sessionId");
       const cwd = url.searchParams.get("cwd") || process.cwd();
       if (!sessionId) return new Response("Session ID required", { status: 400 });
 
-      const shellId = `shell-${sessionId}`;
-      const upgraded = server.upgrade(req, { data: { sessionId: shellId, isShell: true, cwd } });
+      // Initialize tmux if needed
+      if (!tmuxManager.initialized) {
+        initializeTmux(cwd);
+      }
+
+      // Ensure window exists for this session
+      ensureWindow(sessionId, cwd);
+
+      const upgraded = server.upgrade(req, { data: { sessionId, isShell: true, cwd } });
       if (upgraded) return undefined;
       return new Response("WebSocket upgrade failed", { status: 400 });
     }
@@ -63,37 +78,16 @@ Bun.serve<WebSocketData>({
     open(ws) {
       const { sessionId, isShell, cwd } = ws.data;
 
-      // Handle shell terminal connections
+      // Handle shell terminal connections (tmux-based)
       if (isShell) {
         log(`\x1b[38;5;245m[ws]\x1b[0m Shell connected: ${sessionId}`);
 
-        let shell = shellTerminals.get(sessionId);
-        if (!shell) {
-          // Create new shell PTY
-          const ptyProcess = spawn("/bin/zsh", [], {
-            name: "xterm-256color",
-            cwd: cwd || process.cwd(),
-            env: {
-              ...process.env,
-              TERM: "xterm-256color",
-            },
-            rows: 30,
-            cols: 120,
-          });
+        // Add client to tmux manager
+        addClient(ws);
 
-          shell = { pty: ptyProcess, clients: new Set() };
-          shellTerminals.set(sessionId, shell);
+        // Switch to this session's window
+        switchWindow(sessionId);
 
-          ptyProcess.onData((data: string) => {
-            for (const client of shell!.clients) {
-              if (client.readyState === 1) {
-                client.send(JSON.stringify({ type: "output", data }));
-              }
-            }
-          });
-        }
-
-        shell.clients.add(ws);
         return;
       }
 
@@ -127,54 +121,26 @@ Bun.serve<WebSocketData>({
     message(ws, message) {
       const { sessionId, isShell } = ws.data;
 
-      // Handle shell terminal messages
+      // Handle shell terminal messages (tmux-based)
       if (isShell) {
-        const shell = shellTerminals.get(sessionId);
-        if (!shell) return;
-
         try {
           const msg = JSON.parse(message.toString());
           switch (msg.type) {
             case "input":
-              shell.pty.write(msg.data);
+              writeInput(msg.data);
               break;
             case "resize":
-              shell.pty.resize(msg.cols, msg.rows);
+              resize(msg.cols, msg.rows);
               break;
             case "restart":
-              log(`\x1b[38;5;245m[ws]\x1b[0m Restarting shell: ${sessionId}`);
-              // Kill existing PTY
-              shell.pty.kill();
-
-              // Create new PTY
-              const newPty = spawn("/bin/zsh", [], {
-                name: "xterm-256color",
-                cwd: ws.data.cwd || process.cwd(),
-                env: {
-                  ...process.env,
-                  TERM: "xterm-256color",
-                },
-                rows: 30,
-                cols: 120,
-              });
-
-              // Update shell with new PTY
-              shell.pty = newPty;
-
-              // Set up data handler for new PTY
-              newPty.onData((data: string) => {
-                for (const client of shell.clients) {
-                  if (client.readyState === 1) {
-                    client.send(JSON.stringify({ type: "output", data }));
-                  }
-                }
-              });
-
-              // Notify clients that shell restarted
-              for (const client of shell.clients) {
-                if (client.readyState === 1) {
-                  client.send(JSON.stringify({ type: "restarted" }));
-                }
+              log(`\x1b[38;5;245m[ws]\x1b[0m Restarting shell window: ${sessionId}`);
+              restartCurrentWindow();
+              break;
+            case "switch":
+              // Switch to a different session's window
+              if (msg.sessionId) {
+                ensureWindow(msg.sessionId, msg.cwd || process.cwd());
+                switchWindow(msg.sessionId);
               }
               break;
           }
@@ -210,20 +176,11 @@ Bun.serve<WebSocketData>({
     close(ws) {
       const { sessionId, isShell } = ws.data;
 
-      // Handle shell terminal disconnection
+      // Handle shell terminal disconnection (tmux-based)
       if (isShell) {
-        const shell = shellTerminals.get(sessionId);
-        if (shell) {
-          shell.clients.delete(ws);
-          log(`\x1b[38;5;245m[ws]\x1b[0m Shell disconnected: ${sessionId}`);
-
-          // Clean up shell if no more clients
-          if (shell.clients.size === 0) {
-            shell.pty.kill();
-            shellTerminals.delete(sessionId);
-            log(`\x1b[38;5;245m[ws]\x1b[0m Shell terminated: ${sessionId}`);
-          }
-        }
+        removeClient(ws);
+        log(`\x1b[38;5;245m[ws]\x1b[0m Shell client disconnected: ${sessionId}`);
+        // Don't clean up tmux windows on disconnect - they persist
         return;
       }
 
@@ -256,5 +213,6 @@ process.on("SIGINT", () => {
     if (session.pty) session.pty.kill();
     if (session.stateTrackerPty) session.stateTrackerPty.kill();
   }
+  cleanupTmux();
   process.exit(0);
 });

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useStore, AgentSession } from "../../stores/useStore";
 
 interface AgentNodeData {
@@ -14,23 +14,6 @@ export function useAgentNodeState(
     useStore();
 
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
-
-  // Close context menu on outside click
-  useEffect(() => {
-    const handleClick = (e: MouseEvent) => {
-      const target = e.target as HTMLElement;
-      if (target.closest(".context-menu-container")) {
-        return;
-      }
-      setContextMenu(null);
-    };
-    if (contextMenu) {
-      setTimeout(() => {
-        window.addEventListener("click", handleClick);
-      }, 0);
-      return () => window.removeEventListener("click", handleClick);
-    }
-  }, [contextMenu]);
 
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
