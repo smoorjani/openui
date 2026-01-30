@@ -71,22 +71,22 @@ export function AgentNodeCard({
 
   return (
     <div
-      className={`relative w-[220px] rounded-lg transition-all duration-300 cursor-pointer ${
-        selected ? "ring-1 ring-white/20" : ""
-      }`}
+      className={`relative w-[220px] rounded-lg transition-all duration-300 cursor-pointer`}
       style={{
         backgroundColor: "#1a1a1a",
-        border: needsAttention
+        border: selected
+          ? `2px solid #3B82F6`
+          : needsAttention
           ? `2px solid ${statusInfo.color}`
           : isActive
           ? `1px solid ${statusInfo.color}40`
           : "1px solid #2a2a2a",
-        boxShadow: needsAttention
+        boxShadow: selected
+          ? `0 0 20px rgba(59, 130, 246, 0.5), 0 0 40px rgba(59, 130, 246, 0.3), 0 4px 12px rgba(0, 0, 0, 0.4)`
+          : needsAttention
           ? `0 0 16px ${statusInfo.color}40, 0 0 32px ${statusInfo.color}20, 0 4px 12px rgba(0, 0, 0, 0.4)`
           : isActive
           ? `0 0 12px ${statusInfo.color}15, 0 4px 12px rgba(0, 0, 0, 0.4)`
-          : selected
-          ? "0 8px 24px rgba(0, 0, 0, 0.6)"
           : "0 4px 12px rgba(0, 0, 0, 0.4)",
       }}
     >
@@ -102,12 +102,23 @@ export function AgentNodeCard({
         />
       )}
       {/* Pulsing border for attention states */}
-      {needsAttention && (
+      {needsAttention && !selected && (
         <div
           className="absolute inset-0 rounded-lg pointer-events-none"
           style={{
             border: `2px solid ${statusInfo.color}`,
             animation: 'attention-pulse 1.5s ease-in-out infinite',
+          }}
+        />
+      )}
+      {/* Glow effect for selected/active node */}
+      {selected && (
+        <div
+          className="absolute -inset-1 rounded-xl pointer-events-none"
+          style={{
+            border: `1px solid rgba(59, 130, 246, 0.4)`,
+            boxShadow: `0 0 15px rgba(59, 130, 246, 0.3)`,
+            animation: 'selected-glow 2s ease-in-out infinite',
           }}
         />
       )}
@@ -213,6 +224,10 @@ export function AgentNodeCard({
         @keyframes attention-pulse {
           0%, 100% { opacity: 1; }
           50% { opacity: 0.5; }
+        }
+        @keyframes selected-glow {
+          0%, 100% { opacity: 0.8; }
+          50% { opacity: 0.4; }
         }
       `}</style>
     </div>

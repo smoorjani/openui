@@ -239,8 +239,59 @@ apiRoutes.post("/sessions/:sessionId/restart", async (c) => {
     log(`\x1b[38;5;141m[session]\x1b[0m Attempting to resume Claude session: ${session.claudeSessionId}`);
   }
 
-  // Watch for "No conversation found" error and retry without session ID
-  let retryWithoutId = false;
+  // Watch for "No conversation found" error and retry with --resume (no ID), then without
+  let retryAttempt = 0; // 0 = initial, 1 = tried --resume without ID, 2 = tried without --resume
+
+  const restartWithCommand = (cmd: string) => {
+    setTimeout(async () => {
+      if (session.pty) {
+        session.pty.kill();
+      }
+
+      const newPty = spawn("/bin/zsh", [], {
+        name: "xterm-256color",
+        cwd: session.cwd,
+        env: {
+          ...process.env,
+          TERM: "xterm-256color",
+          OPENUI_SESSION_ID: sessionId,
+        },
+        rows: 30,
+        cols: 120,
+      });
+
+      session.pty = newPty;
+      session.outputBuffer = [];
+
+      newPty.onData((newData: string) => {
+        session.outputBuffer.push(newData);
+        if (session.outputBuffer.length > 1000) {
+          session.outputBuffer.shift();
+        }
+        session.lastOutputTime = Date.now();
+        for (const client of session.clients) {
+          if (client.readyState === 1) {
+            client.send(JSON.stringify({ type: "output", data: newData }));
+          }
+        }
+
+        // Check for errors and retry if needed
+        if (newData.includes("No conversation found") && retryAttempt < 2) {
+          retryAttempt++;
+          if (retryAttempt === 2) {
+            // Final attempt: no --resume at all
+            log(`\x1b[38;5;141m[session]\x1b[0m --resume failed, starting fresh`);
+            const freshCmd = injectPluginDir("llm agent claude", session.agentId);
+            restartWithCommand(freshCmd);
+          }
+        }
+      });
+
+      setTimeout(() => {
+        newPty.write(`${cmd}\r`);
+      }, 300);
+    }, 500);
+  };
 
   ptyProcess.onData((data: string) => {
     session.outputBuffer.push(data);
@@ -257,56 +308,15 @@ apiRoutes.post("/sessions/:sessionId/restart", async (c) => {
       }
     }
 
-    // Check for invalid session ID error and retry without it
-    if (hasSessionId && !retryWithoutId && data.includes("No conversation found with session ID")) {
-      retryWithoutId = true;
-      log(`\x1b[38;5;141m[session]\x1b[0m Session ID invalid, restarting without --resume`);
-
-      // Clear the session ID since it's invalid
+    // Check for invalid session ID error and retry
+    if (data.includes("No conversation found") && retryAttempt === 0) {
+      retryAttempt = 1;
       session.claudeSessionId = undefined;
 
-      // Kill current PTY and restart without session ID
-      setTimeout(async () => {
-        if (session.pty) {
-          session.pty.kill();
-        }
-
-        const newPty = spawn("/bin/zsh", [], {
-          name: "xterm-256color",
-          cwd: session.cwd,
-          env: {
-            ...process.env,
-            TERM: "xterm-256color",
-            OPENUI_SESSION_ID: sessionId,
-          },
-          rows: 30,
-          cols: 120,
-        });
-
-        session.pty = newPty;
-        session.outputBuffer = [];
-
-        newPty.onData((newData: string) => {
-          session.outputBuffer.push(newData);
-          if (session.outputBuffer.length > 1000) {
-            session.outputBuffer.shift();
-          }
-          session.lastOutputTime = Date.now();
-          for (const client of session.clients) {
-            if (client.readyState === 1) {
-              client.send(JSON.stringify({ type: "output", data: newData }));
-            }
-          }
-        });
-
-        // Run without session ID
-        const freshCommand = injectPluginDir("llm agent claude", session.agentId);
-        setTimeout(() => {
-          newPty.write(`${freshCommand}\r`);
-        }, 300);
-
-        log(`\x1b[38;5;141m[session]\x1b[0m Restarted without session ID`);
-      }, 500);
+      // First retry: use --resume without specific ID (lets Claude pick most recent)
+      log(`\x1b[38;5;141m[session]\x1b[0m Session ID invalid, trying --resume without ID`);
+      const resumeCmd = injectPluginDir("llm agent claude --resume", session.agentId);
+      restartWithCommand(resumeCmd);
     }
   });
 
@@ -394,7 +404,7 @@ apiRoutes.post("/status-update", async (c) => {
         clearTimeout(session.permissionTimeout);
       }
 
-      // If we don't get post_tool within 2.5 seconds, assume waiting for permission
+      // If we don't get post_tool within 10 seconds, assume waiting for permission
       session.permissionTimeout = setTimeout(() => {
         // Only switch to waiting_input if we haven't received post_tool yet
         if (session.preToolTime) {
@@ -412,7 +422,7 @@ apiRoutes.post("/status-update", async (c) => {
             }
           }
         }
-      }, 2500);
+      }, 10000);
     } else if (status === "post_tool") {
       // PostToolUse fired - tool completed, clear the permission timeout
       effectiveStatus = "running";

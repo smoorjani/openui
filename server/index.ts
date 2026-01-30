@@ -141,6 +141,42 @@ Bun.serve<WebSocketData>({
             case "resize":
               shell.pty.resize(msg.cols, msg.rows);
               break;
+            case "restart":
+              log(`\x1b[38;5;245m[ws]\x1b[0m Restarting shell: ${sessionId}`);
+              // Kill existing PTY
+              shell.pty.kill();
+
+              // Create new PTY
+              const newPty = spawn("/bin/zsh", [], {
+                name: "xterm-256color",
+                cwd: ws.data.cwd || process.cwd(),
+                env: {
+                  ...process.env,
+                  TERM: "xterm-256color",
+                },
+                rows: 30,
+                cols: 120,
+              });
+
+              // Update shell with new PTY
+              shell.pty = newPty;
+
+              // Set up data handler for new PTY
+              newPty.onData((data: string) => {
+                for (const client of shell.clients) {
+                  if (client.readyState === 1) {
+                    client.send(JSON.stringify({ type: "output", data }));
+                  }
+                }
+              });
+
+              // Notify clients that shell restarted
+              for (const client of shell.clients) {
+                if (client.readyState === 1) {
+                  client.send(JSON.stringify({ type: "restarted" }));
+                }
+              }
+              break;
           }
         } catch (e) {
           if (!QUIET) console.error("Error processing shell message:", e);

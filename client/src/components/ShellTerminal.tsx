@@ -1,7 +1,8 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useCallback } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { RotateCcw } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
 
 interface ShellTerminalProps {
@@ -154,15 +155,34 @@ export function ShellTerminal({ sessionId, cwd, color }: ShellTerminalProps) {
     };
   }, [sessionId, cwd, color]);
 
+  const handleRestart = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: "restart" }));
+      // Clear the terminal
+      if (xtermRef.current) {
+        xtermRef.current.clear();
+      }
+    }
+  }, []);
+
   return (
-    <div
-      ref={terminalRef}
-      className="w-full h-full"
-      style={{
-        padding: "12px",
-        backgroundColor: "#0d0d0d",
-        minHeight: "200px"
-      }}
-    />
+    <div className="relative w-full h-full">
+      <button
+        onClick={handleRestart}
+        className="absolute top-2 right-2 z-10 p-1.5 rounded bg-zinc-800/80 hover:bg-zinc-700 text-zinc-400 hover:text-white transition-colors"
+        title="Restart shell"
+      >
+        <RotateCcw className="w-3.5 h-3.5" />
+      </button>
+      <div
+        ref={terminalRef}
+        className="w-full h-full"
+        style={{
+          padding: "12px",
+          backgroundColor: "#0d0d0d",
+          minHeight: "200px"
+        }}
+      />
+    </div>
   );
 }

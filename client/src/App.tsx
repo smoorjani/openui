@@ -294,6 +294,7 @@ function AppContent() {
           maxZoom={2}
           nodesDraggable
           nodesConnectable={false}
+          selectNodesOnDrag={false}
           snapToGrid
           snapGrid={[24, 24]}
         >

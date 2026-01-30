@@ -1,6 +1,6 @@
 import { spawnSync } from "bun";
 import { spawn as spawnPty } from "bun-pty";
-import { existsSync, mkdirSync } from "fs";
+import { existsSync, mkdirSync, copyFileSync } from "fs";
 import { join, basename } from "path";
 import { homedir } from "os";
 import type { Session } from "../types";
@@ -147,9 +147,23 @@ export function createWorktree(params: {
     return { success: true, worktreePath };
   }
 
-  // Fetch latest from remote first
+  // Check if upstream remote exists (common in fork workflows)
+  const hasUpstream = spawnSync(["git", "remote", "get-url", "upstream"], {
+    cwd: gitRoot,
+    stdout: "pipe",
+    stderr: "pipe",
+  }).exitCode === 0;
+
+  // Fetch from upstream (preferred) and origin
   log(`\x1b[38;5;141m[worktree]\x1b[0m Fetching from remote...`);
+  if (hasUpstream) {
+    log(`\x1b[38;5;141m[worktree]\x1b[0m Fetching from upstream...`);
+    spawnSync(["git", "fetch", "upstream"], { cwd: gitRoot, stdout: "pipe", stderr: "pipe" });
+  }
   spawnSync(["git", "fetch", "origin"], { cwd: gitRoot, stdout: "pipe", stderr: "pipe" });
+
+  // Determine the best remote for the base branch (prefer upstream if available)
+  const baseRemote = hasUpstream ? "upstream" : "origin";
 
   // Check if branch exists locally or remotely
   const localBranch = spawnSync(["git", "rev-parse", "--verify", branchName], {
@@ -158,11 +172,17 @@ export function createWorktree(params: {
     stderr: "pipe",
   });
 
-  const remoteBranch = spawnSync(["git", "rev-parse", "--verify", `origin/${branchName}`], {
+  const remoteBranchOrigin = spawnSync(["git", "rev-parse", "--verify", `origin/${branchName}`], {
     cwd: gitRoot,
     stdout: "pipe",
     stderr: "pipe",
   });
+
+  const remoteBranchUpstream = hasUpstream ? spawnSync(["git", "rev-parse", "--verify", `upstream/${branchName}`], {
+    cwd: gitRoot,
+    stdout: "pipe",
+    stderr: "pipe",
+  }) : null;
 
   let result;
   if (localBranch.exitCode === 0) {
@@ -173,18 +193,26 @@ export function createWorktree(params: {
       stdout: "pipe",
       stderr: "pipe",
     });
-  } else if (remoteBranch.exitCode === 0) {
-    // Branch exists on remote, track it
-    log(`\x1b[38;5;141m[worktree]\x1b[0m Creating worktree tracking remote branch: ${branchName}`);
+  } else if (remoteBranchUpstream?.exitCode === 0) {
+    // Branch exists on upstream, track it
+    log(`\x1b[38;5;141m[worktree]\x1b[0m Creating worktree tracking upstream branch: ${branchName}`);
+    result = spawnSync(["git", "worktree", "add", "--track", "-b", branchName, worktreePath, `upstream/${branchName}`], {
+      cwd: gitRoot,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+  } else if (remoteBranchOrigin.exitCode === 0) {
+    // Branch exists on origin, track it
+    log(`\x1b[38;5;141m[worktree]\x1b[0m Creating worktree tracking origin branch: ${branchName}`);
     result = spawnSync(["git", "worktree", "add", "--track", "-b", branchName, worktreePath, `origin/${branchName}`], {
       cwd: gitRoot,
       stdout: "pipe",
       stderr: "pipe",
     });
   } else {
-    // Create new branch from base
-    log(`\x1b[38;5;141m[worktree]\x1b[0m Creating new worktree with branch: ${branchName} from ${baseBranch}`);
-    result = spawnSync(["git", "worktree", "add", "-b", branchName, worktreePath, `origin/${baseBranch}`], {
+    // Create new branch from base (prefer upstream if available)
+    log(`\x1b[38;5;141m[worktree]\x1b[0m Creating new worktree with branch: ${branchName} from ${baseRemote}/${baseBranch}`);
+    result = spawnSync(["git", "worktree", "add", "-b", branchName, worktreePath, `${baseRemote}/${baseBranch}`], {
       cwd: gitRoot,
       stdout: "pipe",
       stderr: "pipe",
@@ -198,6 +226,23 @@ export function createWorktree(params: {
   }
 
   log(`\x1b[38;5;141m[worktree]\x1b[0m Created worktree at: ${worktreePath}`);
+
+  // Copy .claude/settings.local.json from parent repo to worktree if it exists
+  const parentSettingsPath = join(gitRoot, ".claude", "settings.local.json");
+  if (existsSync(parentSettingsPath)) {
+    const worktreeClaudeDir = join(worktreePath, ".claude");
+    const worktreeSettingsPath = join(worktreeClaudeDir, "settings.local.json");
+    try {
+      if (!existsSync(worktreeClaudeDir)) {
+        mkdirSync(worktreeClaudeDir, { recursive: true });
+      }
+      copyFileSync(parentSettingsPath, worktreeSettingsPath);
+      log(`\x1b[38;5;141m[worktree]\x1b[0m Copied .claude/settings.local.json to worktree`);
+    } catch (e) {
+      logError(`\x1b[38;5;141m[worktree]\x1b[0m Failed to copy settings.local.json:`, e);
+    }
+  }
+
   return { success: true, worktreePath };
 }
 
@@ -377,6 +422,23 @@ export function deleteSession(sessionId: string) {
   if (!session) return false;
 
   if (session.pty) session.pty.kill();
+
+  // If this was a worktree session, remove the worktree
+  if (session.worktreePath && session.originalCwd) {
+    try {
+      log(`\x1b[38;5;141m[session]\x1b[0m Removing worktree: ${session.worktreePath}`);
+      const result = spawnSync(["git", "worktree", "remove", "-f", session.worktreePath], {
+        cwd: session.originalCwd,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      if (result.exitCode !== 0) {
+        logError(`\x1b[38;5;196m[session]\x1b[0m Failed to remove worktree: ${result.stderr?.toString()}`);
+      }
+    } catch (e) {
+      logError(`\x1b[38;5;196m[session]\x1b[0m Error removing worktree:`, e);
+    }
+  }
 
   sessions.delete(sessionId);
   log(`\x1b[38;5;141m[session]\x1b[0m Killed ${sessionId}`);

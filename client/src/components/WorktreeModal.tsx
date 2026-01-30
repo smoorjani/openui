@@ -76,11 +76,12 @@ export function WorktreeModal({ open, onClose }: WorktreeModalProps) {
       }
 
       const maxX = nodes.reduce((max, n) => Math.max(max, (n.position?.x || 0)), 0);
+      const displayName = branchName.trim();
       const newNode = {
         id: nodeId,
         type: "agent",
         position: { x: maxX + 420, y: 100 },
-        data: { nodeId },
+        data: { nodeId, label: displayName },
       };
       addNode(newNode);
 
@@ -89,6 +90,7 @@ export function WorktreeModal({ open, onClose }: WorktreeModalProps) {
         sessionId: data.sessionId,
         agentId: "claude",
         agentName: "Claude Code",
+        customName: displayName,
         command: "claude",
         color: "#F97316",
         createdAt: new Date().toISOString(),

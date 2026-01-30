@@ -479,6 +479,16 @@ export function Sidebar() {
                   </span>
                 </div>
               )}
+              <div className="flex items-center gap-2 text-xs pt-2 border-t border-border mt-2">
+                <span className="text-zinc-600 font-mono text-[10px]">ID</span>
+                <span
+                  className="text-zinc-500 font-mono ml-auto text-[10px] cursor-pointer hover:text-zinc-300 truncate max-w-[180px]"
+                  title={`Click to copy: ${session.sessionId}`}
+                  onClick={() => navigator.clipboard.writeText(session.sessionId)}
+                >
+                  {session.sessionId}
+                </span>
+              </div>
             </div>
           </div>
         </motion.div>

@@ -65,7 +65,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/status-reporter.sh idle",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/status-reporter.sh running",
             "timeout": 5
           }
         ]

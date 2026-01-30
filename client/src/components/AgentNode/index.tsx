@@ -25,8 +25,12 @@ interface AgentNodeData {
   sessionId: string;
 }
 
-export const AgentNode = ({ id, data, selected }: NodeProps) => {
+export const AgentNode = ({ id, data }: NodeProps) => {
   const nodeData = data as unknown as AgentNodeData;
+  const { setSelectedNodeId, setSidebarOpen } = useStore();
+
+  // Use our store's selectedNodeId for selection state instead of React Flow's
+  const isSelected = useStore((state) => state.selectedNodeId === id);
 
   // Subscribe directly to status and currentTool as primitive values - this guarantees re-render on change
   const status: AgentStatus = useStore((state) => state.sessions.get(id)?.status) || "idle";
@@ -42,6 +46,12 @@ export const AgentNode = ({ id, data, selected }: NodeProps) => {
     closeContextMenu,
   } = useAgentNodeState(id, nodeData, session);
 
+  const handleClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setSelectedNodeId(id);
+    setSidebarOpen(true);
+  };
+
   const displayColor = session?.customColor || session?.color || nodeData.color || "#22C55E";
   const displayName = session?.customName || session?.agentName || nodeData.label || "Agent";
   const displayIcon = nodeData.icon || "cpu";
@@ -52,10 +62,11 @@ export const AgentNode = ({ id, data, selected }: NodeProps) => {
       <motion.div
         initial={{ scale: 0.9, opacity: 0 }}
         animate={{ scale: 1, opacity: 1 }}
+        onClick={handleClick}
         onContextMenu={handleContextMenu}
       >
         <AgentNodeCard
-          selected={selected}
+          selected={isSelected}
           displayColor={displayColor}
           displayName={displayName}
           Icon={Icon}
