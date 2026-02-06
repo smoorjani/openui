@@ -74,17 +74,37 @@ export function Terminal({ sessionId, color, nodeId }: TerminalProps) {
     term.loadAddon(webLinksAddon);
 
     term.open(terminalRef.current);
-    setTimeout(() => fitAddon.fit(), 50);
 
     xtermRef.current = term;
     fitAddonRef.current = fitAddon;
+
+    // Helper to fit and send resize - only when visible with valid dimensions
+    const fitAndResize = (ws: WebSocket | null) => {
+      if (!fitAddonRef.current || !xtermRef.current) return;
+
+      // Check if terminal container is visible and has size
+      const rect = terminalRef.current?.getBoundingClientRect();
+      if (!rect || rect.width < 50 || rect.height < 50) return;
+
+      fitAddonRef.current.fit();
+
+      const cols = xtermRef.current.cols;
+      const rows = xtermRef.current.rows;
+
+      // Only send if we have valid dimensions
+      if (cols > 0 && rows > 0 && ws?.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "resize", cols, rows }));
+      }
+    };
+
+    // Initial fit with delay
+    setTimeout(() => fitAndResize(null), 50);
 
     // Connect WebSocket with small delay to allow session to be ready
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${protocol}//${window.location.host}/ws?sessionId=${sessionId}`;
 
     let ws: WebSocket | null = null;
-    let isFirstMessage = true;
 
     const connectWs = () => {
       if (!mountedRef.current) return;
@@ -93,9 +113,13 @@ export function Terminal({ sessionId, color, nodeId }: TerminalProps) {
       wsRef.current = ws;
 
       ws.onopen = () => {
-        if (xtermRef.current) {
-          ws?.send(JSON.stringify({ type: "resize", cols: xtermRef.current.cols, rows: xtermRef.current.rows }));
-        }
+        // Send resize immediately after connection
+        fitAndResize(ws);
+
+        // Send multiple resize events to ensure TUI syncs properly
+        setTimeout(() => fitAndResize(ws), 200);
+        setTimeout(() => fitAndResize(ws), 500);
+        setTimeout(() => fitAndResize(ws), 1000);
       };
 
       ws.onmessage = (event) => {
@@ -103,21 +127,7 @@ export function Terminal({ sessionId, color, nodeId }: TerminalProps) {
           const msg = JSON.parse(event.data);
           if (msg.type === "output") {
             term.write(msg.data);
-            // After first message, send resize to sync PTY cursor position
-            if (isFirstMessage) {
-              isFirstMessage = false;
-              setTimeout(() => {
-                if (ws?.readyState === WebSocket.OPEN && xtermRef.current) {
-                  ws.send(JSON.stringify({
-                    type: "resize",
-                    cols: xtermRef.current.cols,
-                    rows: xtermRef.current.rows
-                  }));
-                }
-              }, 100);
-            }
           } else if (msg.type === "status") {
-            // Handle status updates from plugin hooks
             updateSession(nodeId, {
               status: msg.status as AgentStatus,
               isRestored: msg.isRestored,
@@ -160,19 +170,34 @@ export function Terminal({ sessionId, color, nodeId }: TerminalProps) {
       }
     });
 
+    // Debounced resize handling
+    let resizeTimeout: ReturnType<typeof setTimeout> | null = null;
+    let lastCols = 0;
+    let lastRows = 0;
+
     const resizeObserver = new ResizeObserver(() => {
-      requestAnimationFrame(() => {
-        if (fitAddonRef.current) {
+      if (resizeTimeout) clearTimeout(resizeTimeout);
+
+      resizeTimeout = setTimeout(() => {
+        requestAnimationFrame(() => {
+          if (!fitAddonRef.current || !xtermRef.current) return;
+
           fitAddonRef.current.fit();
-        }
-        if (ws?.readyState === WebSocket.OPEN && xtermRef.current) {
-          ws.send(JSON.stringify({
-            type: "resize",
-            cols: xtermRef.current.cols,
-            rows: xtermRef.current.rows
-          }));
-        }
-      });
+
+          const cols = xtermRef.current.cols;
+          const rows = xtermRef.current.rows;
+
+          // Only send if dimensions actually changed and are valid
+          if (cols > 0 && rows > 0 && (cols !== lastCols || rows !== lastRows)) {
+            lastCols = cols;
+            lastRows = rows;
+
+            if (ws?.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: "resize", cols, rows }));
+            }
+          }
+        });
+      }, 50);
     });
 
     resizeObserver.observe(terminalRef.current);
@@ -180,6 +205,7 @@ export function Terminal({ sessionId, color, nodeId }: TerminalProps) {
     return () => {
       mountedRef.current = false;
       clearTimeout(connectTimeout);
+      if (resizeTimeout) clearTimeout(resizeTimeout);
       resizeObserver.disconnect();
       ws?.close();
       term.dispose();

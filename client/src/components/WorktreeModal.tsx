@@ -55,6 +55,7 @@ export function WorktreeModal({ open, onClose }: WorktreeModalProps) {
 
     try {
       const nodeId = `node-${Date.now()}`;
+      const displayName = branchName.trim();
       const res = await fetch("/api/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -63,10 +64,11 @@ export function WorktreeModal({ open, onClose }: WorktreeModalProps) {
           agentName: "Claude Code",
           command: "claude",
           cwd: selectedRepo.path,
-          branchName: branchName.trim(),
+          branchName: displayName,
           baseBranch: selectedRepo.baseBranch,
           createWorktree: true,
           nodeId,
+          customName: displayName,
         }),
       });
 
@@ -76,7 +78,6 @@ export function WorktreeModal({ open, onClose }: WorktreeModalProps) {
       }
 
       const maxX = nodes.reduce((max, n) => Math.max(max, (n.position?.x || 0)), 0);
-      const displayName = branchName.trim();
       const newNode = {
         id: nodeId,
         type: "agent",

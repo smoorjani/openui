@@ -16,23 +16,13 @@ export function ShellTerminal({ sessionId, cwd, color }: ShellTerminalProps) {
   const xtermRef = useRef<XTerm | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
-  const mountedRef = useRef(false);
   const reconnectAttemptRef = useRef(0);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const currentSessionIdRef = useRef(sessionId);
-
-  // Update current session ref and send switch command
-  useEffect(() => {
-    currentSessionIdRef.current = sessionId;
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: "switch", sessionId, cwd }));
-    }
-  }, [sessionId, cwd]);
+  const mountedRef = useRef(true);
 
   useEffect(() => {
-    if (!terminalRef.current) return;
+    if (!terminalRef.current || !sessionId) return;
 
-    if (mountedRef.current) return;
     mountedRef.current = true;
 
     while (terminalRef.current.firstChild) {
@@ -88,11 +78,11 @@ export function ShellTerminal({ sessionId, cwd, color }: ShellTerminalProps) {
     fitAddonRef.current = fitAddon;
 
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl = `${protocol}//${window.location.host}/ws/shell?sessionId=${sessionId}&cwd=${encodeURIComponent(cwd)}`;
 
     const connectWs = () => {
       if (!mountedRef.current) return;
 
-      const wsUrl = `${protocol}//${window.location.host}/ws/shell?sessionId=${currentSessionIdRef.current}&cwd=${encodeURIComponent(cwd)}`;
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
@@ -119,7 +109,6 @@ export function ShellTerminal({ sessionId, cwd, color }: ShellTerminalProps) {
       ws.onclose = () => {
         if (!mountedRef.current) return;
 
-        // Exponential backoff reconnection
         const attempt = reconnectAttemptRef.current;
         const delay = Math.min(1000 * Math.pow(2, attempt), 30000);
         reconnectAttemptRef.current = attempt + 1;
@@ -134,7 +123,6 @@ export function ShellTerminal({ sessionId, cwd, color }: ShellTerminalProps) {
 
     const connectTimeout = setTimeout(connectWs, 100);
 
-    // Handle Shift+Enter to insert newline
     term.attachCustomKeyEventHandler((event) => {
       if (event.key === 'Enter' && event.shiftKey) {
         if (event.type === 'keydown' && wsRef.current?.readyState === WebSocket.OPEN) {
@@ -178,7 +166,7 @@ export function ShellTerminal({ sessionId, cwd, color }: ShellTerminalProps) {
       wsRef.current?.close();
       term.dispose();
     };
-  }, [color, cwd]);
+  }, [sessionId, cwd, color]);
 
   const handleRestart = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {

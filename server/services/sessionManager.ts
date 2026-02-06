@@ -1,11 +1,122 @@
 import { spawnSync } from "bun";
 import { spawn as spawnPty } from "bun-pty";
-import { existsSync, mkdirSync, copyFileSync } from "fs";
+import { existsSync, mkdirSync, copyFileSync, readFileSync, writeFileSync } from "fs";
 import { join, basename } from "path";
 import { homedir } from "os";
 import type { Session } from "../types";
 import { loadBuffer } from "./persistence";
-import { removeWindow } from "./tmuxShell";
+
+const DEFAULT_PERMISSIONS = [
+  "WebFetch(domain:*.anthropic.com)",
+  "WebFetch(domain:code.claude.com)",
+  "WebFetch(domain:*.mozilla.org)",
+
+  "Bash(ls:*)",
+  "Bash(pwd:*)",
+  "Bash(echo:*)",
+  "Bash(cat:*)",
+  "Bash(grep:*)",
+  "Bash(find:*)",
+  "Bash(head:*)",
+  "Bash(tail:*)",
+  "Bash(wc:*)",
+  "Bash(rg:*)",
+  "Bash(sort:*)",
+  "Bash(uniq:*)",
+  "Bash(cd:*)",
+  "Bash(ps:*)",
+  "Bash(top:*)",
+  "Bash(df:*)",
+  "Bash(du:*)",
+  "Bash(which:*)",
+  "Bash(whereis:*)",
+  "Bash(whoami:*)",
+  "Bash(jq:*)",
+
+  "Bash(git status:*)",
+  "Bash(git log:*)",
+  "Bash(git diff:*)",
+  "Bash(git branch:*)",
+  "Bash(git show:*)",
+
+  "Bash(gh pr view:*)",
+  "Bash(gh pr diff:*)",
+  "Bash(gh api:*)",
+  "Bash(gh repo view:*)",
+  "Bash(gh issue list:*)",
+  "Bash(gh issue view:*)",
+
+  "Bash(kubectl describe:*)",
+  "Bash(kubectl get:*)",
+  "Bash(kubectl logs:*)",
+  "Bash(kubectl version)",
+
+  "Bash(bazel query:*)",
+  "Bash(bazel build:*)",
+  "Bash(bazel test:*)",
+
+  "Read(//tmp/**)",
+  "Read(~/.runtests/**)",
+  "Read(~/.cache/bazel/**)",
+  "Read(~/.cache/debug-copilot/prometheus/**)",
+
+  "mcp__github__github_get_service_info",
+  "mcp__github__github_get_api_info",
+  "mcp__github__github_read_api_call",
+
+  "mcp__databricks__execute_parameterized_sql",
+  "mcp__databricks__check_statement_status",
+  "mcp__databricks__cancel_statement",
+  "mcp__databricks__list_dbfs_files",
+  "mcp__databricks__read_dbfs_file_contents",
+  "mcp__databricks__get_dbfs_destination",
+  "mcp__databricks__databricks_jobs",
+
+  "mcp__glean__glean_get_service_info",
+  "mcp__glean__glean_get_api_info",
+  "mcp__glean__glean_read_api_call",
+  "mcp__glean__list_entities",
+  "mcp__glean__get_person",
+
+  "mcp__jira__jira_get_service_info",
+  "mcp__jira__jira_get_api_info",
+  "mcp__jira__jira_read_api_call",
+
+  "mcp__confluence__get_confluence_page_content",
+  "mcp__confluence__search_confluence_pages",
+  "mcp__confluence__get_confluence_spaces",
+  "mcp__confluence__get_page_children",
+
+  "mcp__devportal__devportal_get_service_info",
+  "mcp__devportal__devportal_get_api_info",
+  "mcp__devportal__devportal_read_api_call",
+
+  "mcp__pagerduty__pagerduty_query",
+
+  "mcp__debug-copilot__get_investigation_details",
+  "mcp__debug-copilot__query_prometheus_metrics",
+  "mcp__debug-copilot__get_grafana_dashboard",
+  "mcp__debug-copilot__get_dashboard_filter_values",
+
+  "mcp__slack__slack_get_service_info",
+  "mcp__slack__slack_get_api_info",
+  "mcp__slack__slack_read_api_call",
+  "mcp__slack__slack_batch_read_api_call",
+
+  "mcp__google__google_get_service_info",
+  "mcp__google__google_get_api_info",
+  "mcp__google__google_read_api_call",
+
+  "mcp__testman__list_investigations",
+  "mcp__testman__get_investigation",
+  "mcp__testman__get_investigation_tags",
+  "mcp__testman__list_smartreverts",
+  "mcp__testman__get_smartrevert",
+  "mcp__testman__get_smartrevert_tags",
+  "mcp__testman__get_relevant_investigations",
+  "mcp__testman__list_issues",
+  "mcp__testman__get_issue",
+];
 
 const QUIET = !!process.env.OPENUI_QUIET;
 const log = QUIET ? () => {} : console.log.bind(console);
@@ -228,20 +339,42 @@ export function createWorktree(params: {
 
   log(`\x1b[38;5;141m[worktree]\x1b[0m Created worktree at: ${worktreePath}`);
 
-  // Copy .claude/settings.local.json from parent repo to worktree if it exists
+  // Create .claude/settings.local.json with default permissions merged with parent settings
   const parentSettingsPath = join(gitRoot, ".claude", "settings.local.json");
-  if (existsSync(parentSettingsPath)) {
-    const worktreeClaudeDir = join(worktreePath, ".claude");
-    const worktreeSettingsPath = join(worktreeClaudeDir, "settings.local.json");
-    try {
-      if (!existsSync(worktreeClaudeDir)) {
-        mkdirSync(worktreeClaudeDir, { recursive: true });
-      }
-      copyFileSync(parentSettingsPath, worktreeSettingsPath);
-      log(`\x1b[38;5;141m[worktree]\x1b[0m Copied .claude/settings.local.json to worktree`);
-    } catch (e) {
-      logError(`\x1b[38;5;141m[worktree]\x1b[0m Failed to copy settings.local.json:`, e);
+  const worktreeClaudeDir = join(worktreePath, ".claude");
+  const worktreeSettingsPath = join(worktreeClaudeDir, "settings.local.json");
+
+  try {
+    if (!existsSync(worktreeClaudeDir)) {
+      mkdirSync(worktreeClaudeDir, { recursive: true });
     }
+
+    let settings: { permissions?: { allow?: string[]; deny?: string[] }; [key: string]: unknown } = {};
+
+    // Load parent settings if they exist
+    if (existsSync(parentSettingsPath)) {
+      try {
+        const parentContent = readFileSync(parentSettingsPath, "utf-8");
+        settings = JSON.parse(parentContent);
+        log(`\x1b[38;5;141m[worktree]\x1b[0m Loaded parent settings.local.json`);
+      } catch (e) {
+        logError(`\x1b[38;5;141m[worktree]\x1b[0m Failed to parse parent settings.local.json:`, e);
+      }
+    }
+
+    // Merge default permissions with existing ones
+    if (!settings.permissions) {
+      settings.permissions = {};
+    }
+    const existingAllow = settings.permissions.allow || [];
+    const mergedAllow = [...new Set([...existingAllow, ...DEFAULT_PERMISSIONS])];
+    settings.permissions.allow = mergedAllow;
+
+    // Write merged settings
+    writeFileSync(worktreeSettingsPath, JSON.stringify(settings, null, 2));
+    log(`\x1b[38;5;141m[worktree]\x1b[0m Created settings.local.json with ${mergedAllow.length} permissions`);
+  } catch (e) {
+    logError(`\x1b[38;5;141m[worktree]\x1b[0m Failed to create settings.local.json:`, e);
   }
 
   return { success: true, worktreePath };
@@ -423,9 +556,6 @@ export function deleteSession(sessionId: string) {
   if (!session) return false;
 
   if (session.pty) session.pty.kill();
-
-  // Remove tmux window for this session
-  removeWindow(sessionId);
 
   // If this was a worktree session, remove the worktree
   if (session.worktreePath && session.originalCwd) {

@@ -152,10 +152,10 @@ export function Sidebar() {
           className="fixed right-0 top-14 bottom-0 z-50 flex flex-col bg-canvas-dark border-l border-border"
           style={{ width: sidebarWidth }}
         >
-          {/* Resize handle */}
+          {/* Resize handle - wider hit area for easier grabbing */}
           <div
             onMouseDown={handleMouseDown}
-            className={`absolute left-0 top-0 bottom-0 w-1 cursor-ew-resize hover:bg-zinc-500 transition-colors ${isResizing ? "bg-zinc-500" : ""}`}
+            className={`absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize hover:bg-zinc-500 transition-colors z-[100] ${isResizing ? "bg-zinc-500" : ""}`}
           />
           {/* Header */}
           <div className="flex-shrink-0 px-4 py-3 border-b border-border">
@@ -431,9 +431,10 @@ export function Sidebar() {
                   nodeId={selectedNodeId!}
                 />
               </div>
-              {/* Single ShellTerminal - tmux handles window switching on server */}
+              {/* Shell terminal recreates when session changes */}
               <div className={`absolute inset-0 ${activeTab === "shell" ? "" : "invisible"}`}>
                 <ShellTerminal
+                  key={`shell-${session.sessionId}`}
                   sessionId={session.sessionId}
                   cwd={session.cwd}
                   color={displayColor}
