@@ -8,6 +8,9 @@ interface WorktreeRepo {
   name: string;
   path: string;
   baseBranch: string;
+  sparseCheckout?: boolean;
+  sparseCheckoutPaths?: string[];
+  remote?: string;
 }
 
 interface WorktreeModalProps {
@@ -62,11 +65,14 @@ export function WorktreeModal({ open, onClose }: WorktreeModalProps) {
         body: JSON.stringify({
           agentId: "claude",
           agentName: "Claude Code",
-          command: "claude",
+          command: "isaac",
           cwd: selectedRepo.path,
           branchName: displayName,
           baseBranch: selectedRepo.baseBranch,
           createWorktree: true,
+          sparseCheckout: selectedRepo.sparseCheckout,
+          sparseCheckoutPaths: selectedRepo.sparseCheckoutPaths,
+          remote: selectedRepo.remote,
           nodeId,
           customName: displayName,
         }),
@@ -92,13 +98,14 @@ export function WorktreeModal({ open, onClose }: WorktreeModalProps) {
         agentId: "claude",
         agentName: "Claude Code",
         customName: displayName,
-        command: "claude",
+        command: "isaac",
         color: "#F97316",
         createdAt: new Date().toISOString(),
         cwd: data.cwd || selectedRepo.path,
         gitBranch: data.gitBranch || branchName.trim(),
         originalCwd: selectedRepo.path,
         status: "running",
+        remote: selectedRepo.remote,
       });
 
       onClose();
@@ -181,9 +188,16 @@ export function WorktreeModal({ open, onClose }: WorktreeModalProps) {
                           <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500 pointer-events-none" />
                         </div>
                         {selectedRepo && (
-                          <p className="text-xs text-zinc-600 mt-1 font-mono truncate">
-                            {selectedRepo.path}
-                          </p>
+                          <div className="flex items-center gap-2 mt-1">
+                            <p className="text-xs text-zinc-600 font-mono truncate">
+                              {selectedRepo.path}
+                            </p>
+                            {selectedRepo.remote && (
+                              <span className="text-[10px] text-cyan-400 px-1.5 py-0.5 rounded bg-cyan-500/10 flex-shrink-0">
+                                {selectedRepo.remote}
+                              </span>
+                            )}
+                          </div>
                         )}
                       </div>
 

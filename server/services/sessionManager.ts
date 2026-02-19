@@ -122,6 +122,28 @@ const QUIET = !!process.env.OPENUI_QUIET;
 const log = QUIET ? () => {} : console.log.bind(console);
 const logError = QUIET ? () => {} : console.error.bind(console);
 
+// Remote host mappings for SSH-based sessions
+const REMOTE_HOSTS: Record<string, string> = {
+  "arca": "arca.ssh",
+};
+
+export function getRemoteHost(remote: string): string {
+  return REMOTE_HOSTS[remote] || remote;
+}
+
+function sshExec(remote: string, command: string): { exitCode: number; stdout: string; stderr: string } {
+  const host = getRemoteHost(remote);
+  const result = spawnSync(["ssh", host, command], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  return {
+    exitCode: result.exitCode ?? 1,
+    stdout: result.stdout.toString(),
+    stderr: result.stderr.toString(),
+  };
+}
+
 // Get the OpenUI plugin directory path
 function getPluginDir(): string | null {
   // Check for plugin in ~/.openui/claude-code-plugin (installed via curl)
@@ -156,12 +178,10 @@ export function injectPluginDir(command: string, agentId: string): string {
   // Check if command already has --plugin-dir
   if (command.includes("--plugin-dir")) return command;
 
-  // Handle "llm agent claude" command format
   const parts = command.split(/\s+/);
 
-  if (parts[0] === "llm" && parts[1] === "agent" && parts[2] === "claude") {
-    // Insert --plugin-dir after 'claude' (index 2)
-    parts.splice(3, 0, `--plugin-dir`, pluginDir);
+  if (parts[0] === "isaac") {
+    parts.splice(1, 0, `--plugin-dir`, pluginDir);
     const finalCmd = parts.join(" ");
     log(`\x1b[38;5;141m[plugin]\x1b[0m Injecting plugin-dir: ${pluginDir}`);
     log(`\x1b[38;5;141m[plugin]\x1b[0m Final command: ${finalCmd}`);
@@ -233,8 +253,10 @@ export function createWorktree(params: {
   cwd: string;
   branchName: string;
   baseBranch: string;
+  sparseCheckout?: boolean;
+  sparseCheckoutPaths?: string[];
 }): { success: boolean; worktreePath?: string; error?: string } {
-  const { cwd, branchName, baseBranch } = params;
+  const { cwd, branchName, baseBranch, sparseCheckout, sparseCheckoutPaths } = params;
   const gitRoot = getGitRoot(cwd);
 
   if (!gitRoot) {
@@ -296,35 +318,33 @@ export function createWorktree(params: {
     stderr: "pipe",
   }) : null;
 
+  const noCheckoutArgs = sparseCheckout ? ["--no-checkout"] : [];
+
   let result;
   if (localBranch.exitCode === 0) {
-    // Branch exists locally, just add worktree
     log(`\x1b[38;5;141m[worktree]\x1b[0m Creating worktree for existing branch: ${branchName}`);
-    result = spawnSync(["git", "worktree", "add", worktreePath, branchName], {
+    result = spawnSync(["git", "worktree", "add", ...noCheckoutArgs, worktreePath, branchName], {
       cwd: gitRoot,
       stdout: "pipe",
       stderr: "pipe",
     });
   } else if (remoteBranchUpstream?.exitCode === 0) {
-    // Branch exists on upstream, track it
     log(`\x1b[38;5;141m[worktree]\x1b[0m Creating worktree tracking upstream branch: ${branchName}`);
-    result = spawnSync(["git", "worktree", "add", "--track", "-b", branchName, worktreePath, `upstream/${branchName}`], {
+    result = spawnSync(["git", "worktree", "add", ...noCheckoutArgs, "--track", "-b", branchName, worktreePath, `upstream/${branchName}`], {
       cwd: gitRoot,
       stdout: "pipe",
       stderr: "pipe",
     });
   } else if (remoteBranchOrigin.exitCode === 0) {
-    // Branch exists on origin, track it
     log(`\x1b[38;5;141m[worktree]\x1b[0m Creating worktree tracking origin branch: ${branchName}`);
-    result = spawnSync(["git", "worktree", "add", "--track", "-b", branchName, worktreePath, `origin/${branchName}`], {
+    result = spawnSync(["git", "worktree", "add", ...noCheckoutArgs, "--track", "-b", branchName, worktreePath, `origin/${branchName}`], {
       cwd: gitRoot,
       stdout: "pipe",
       stderr: "pipe",
     });
   } else {
-    // Create new branch from base (prefer upstream if available)
     log(`\x1b[38;5;141m[worktree]\x1b[0m Creating new worktree with branch: ${branchName} from ${baseRemote}/${baseBranch}`);
-    result = spawnSync(["git", "worktree", "add", "-b", branchName, worktreePath, `${baseRemote}/${baseBranch}`], {
+    result = spawnSync(["git", "worktree", "add", ...noCheckoutArgs, "-b", branchName, worktreePath, `${baseRemote}/${baseBranch}`], {
       cwd: gitRoot,
       stdout: "pipe",
       stderr: "pipe",
@@ -338,6 +358,40 @@ export function createWorktree(params: {
   }
 
   log(`\x1b[38;5;141m[worktree]\x1b[0m Created worktree at: ${worktreePath}`);
+
+  // Apply sparse checkout if requested
+  if (sparseCheckout) {
+    log(`\x1b[38;5;141m[worktree]\x1b[0m Setting up sparse checkout...`);
+    const initResult = spawnSync(["git", "sparse-checkout", "init", "--cone"], {
+      cwd: worktreePath,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    if (initResult.exitCode !== 0) {
+      logError(`\x1b[38;5;141m[worktree]\x1b[0m Failed to init sparse checkout:`, initResult.stderr.toString());
+    }
+
+    if (sparseCheckoutPaths && sparseCheckoutPaths.length > 0) {
+      const setResult = spawnSync(["git", "sparse-checkout", "set", ...sparseCheckoutPaths], {
+        cwd: worktreePath,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      if (setResult.exitCode !== 0) {
+        logError(`\x1b[38;5;141m[worktree]\x1b[0m Failed to set sparse checkout paths:`, setResult.stderr.toString());
+      }
+      log(`\x1b[38;5;141m[worktree]\x1b[0m Sparse checkout paths: ${sparseCheckoutPaths.join(", ")}`);
+    }
+
+    const checkoutResult = spawnSync(["git", "checkout"], {
+      cwd: worktreePath,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    if (checkoutResult.exitCode !== 0) {
+      logError(`\x1b[38;5;141m[worktree]\x1b[0m Failed to checkout after sparse-checkout:`, checkoutResult.stderr.toString());
+    }
+  }
 
   // Create .claude/settings.local.json with default permissions merged with parent settings
   const parentSettingsPath = join(gitRoot, ".claude", "settings.local.json");
@@ -380,6 +434,83 @@ export function createWorktree(params: {
   return { success: true, worktreePath };
 }
 
+// Create a git worktree on a remote machine via SSH
+export function createRemoteWorktree(params: {
+  remote: string;
+  repoPath: string;
+  branchName: string;
+  baseBranch: string;
+  sparseCheckout?: boolean;
+  sparseCheckoutPaths?: string[];
+}): { success: boolean; worktreePath?: string; error?: string } {
+  const { remote, repoPath, branchName, baseBranch, sparseCheckout, sparseCheckoutPaths } = params;
+
+  // Derive worktree directory from repo path (e.g. ~/universe -> ~/universe-worktrees/branch-name)
+  const repoName = repoPath.replace(/\/$/, "").split("/").pop() || "repo";
+  const parentDir = repoPath.replace(/\/$/, "").replace(/\/[^/]+$/, "");
+  const worktreesDir = `${parentDir}/${repoName}-worktrees`;
+  const dirName = branchName.replace(/\//g, "-");
+  const worktreePath = `${worktreesDir}/${dirName}`;
+
+  // Check if worktree already exists
+  const checkExist = sshExec(remote, `test -d ${worktreePath} && echo exists`);
+  if (checkExist.stdout.trim() === "exists") {
+    log(`\x1b[38;5;141m[worktree-remote]\x1b[0m Worktree already exists: ${worktreePath}`);
+    return { success: true, worktreePath };
+  }
+
+  // Ensure worktrees directory exists
+  sshExec(remote, `mkdir -p ${worktreesDir}`);
+
+  // Fetch from origin
+  log(`\x1b[38;5;141m[worktree-remote]\x1b[0m Fetching from origin on ${remote}...`);
+  sshExec(remote, `cd ${repoPath} && git fetch origin`);
+
+  // Check if branch exists
+  const localBranch = sshExec(remote, `cd ${repoPath} && git rev-parse --verify ${branchName} 2>/dev/null`);
+  const remoteBranch = sshExec(remote, `cd ${repoPath} && git rev-parse --verify origin/${branchName} 2>/dev/null`);
+
+  const noCheckoutFlag = sparseCheckout ? " --no-checkout" : "";
+
+  let result;
+  if (localBranch.exitCode === 0) {
+    log(`\x1b[38;5;141m[worktree-remote]\x1b[0m Creating worktree for existing branch: ${branchName}`);
+    result = sshExec(remote, `cd ${repoPath} && git worktree add${noCheckoutFlag} ${worktreePath} ${branchName}`);
+  } else if (remoteBranch.exitCode === 0) {
+    log(`\x1b[38;5;141m[worktree-remote]\x1b[0m Creating worktree tracking origin branch: ${branchName}`);
+    result = sshExec(remote, `cd ${repoPath} && git worktree add${noCheckoutFlag} --track -b ${branchName} ${worktreePath} origin/${branchName}`);
+  } else {
+    log(`\x1b[38;5;141m[worktree-remote]\x1b[0m Creating new worktree: ${branchName} from origin/${baseBranch}`);
+    result = sshExec(remote, `cd ${repoPath} && git worktree add${noCheckoutFlag} -b ${branchName} ${worktreePath} origin/${baseBranch}`);
+  }
+
+  if (result.exitCode !== 0) {
+    logError(`\x1b[38;5;141m[worktree-remote]\x1b[0m Failed to create worktree:`, result.stderr);
+    return { success: false, error: result.stderr };
+  }
+
+  log(`\x1b[38;5;141m[worktree-remote]\x1b[0m Created worktree at: ${worktreePath}`);
+
+  // Apply sparse checkout if requested
+  if (sparseCheckout) {
+    log(`\x1b[38;5;141m[worktree-remote]\x1b[0m Setting up sparse checkout...`);
+    sshExec(remote, `cd ${worktreePath} && git sparse-checkout init --cone`);
+    if (sparseCheckoutPaths && sparseCheckoutPaths.length > 0) {
+      sshExec(remote, `cd ${worktreePath} && git sparse-checkout set ${sparseCheckoutPaths.join(" ")}`);
+      log(`\x1b[38;5;141m[worktree-remote]\x1b[0m Sparse checkout paths: ${sparseCheckoutPaths.join(", ")}`);
+    }
+    sshExec(remote, `cd ${worktreePath} && git checkout`);
+  }
+
+  // Create .claude/settings.local.json with default permissions
+  const settingsJson = JSON.stringify({ permissions: { allow: DEFAULT_PERMISSIONS } }, null, 2);
+  const settingsBase64 = Buffer.from(settingsJson).toString("base64");
+  sshExec(remote, `mkdir -p ${worktreePath}/.claude && echo '${settingsBase64}' | base64 -d > ${worktreePath}/.claude/settings.local.json`);
+  log(`\x1b[38;5;141m[worktree-remote]\x1b[0m Created remote settings.local.json`);
+
+  return { success: true, worktreePath };
+}
+
 
 const MAX_BUFFER_SIZE = 1000;
 
@@ -394,14 +525,12 @@ export function createSession(params: {
   nodeId: string;
   customName?: string;
   customColor?: string;
-  // Ticket and worktree options
-  ticketId?: string;
-  ticketTitle?: string;
-  ticketUrl?: string;
   branchName?: string;
   baseBranch?: string;
   createWorktreeFlag?: boolean;
-  ticketPromptTemplate?: string;
+  sparseCheckout?: boolean;
+  sparseCheckoutPaths?: string[];
+  remote?: string;
 }): { session: Session; cwd: string; gitBranch?: string } {
   const {
     sessionId,
@@ -412,13 +541,12 @@ export function createSession(params: {
     nodeId,
     customName,
     customColor,
-    ticketId,
-    ticketTitle,
-    ticketUrl,
     branchName,
     baseBranch,
     createWorktreeFlag,
-    ticketPromptTemplate,
+    sparseCheckout,
+    sparseCheckoutPaths,
+    remote,
   } = params;
 
   let workingDir = originalCwd;
@@ -426,26 +554,48 @@ export function createSession(params: {
   let mainRepoPath: string | undefined;
   let gitBranch: string | null = null;
 
-  // If worktree requested, create it and use that path
   if (createWorktreeFlag && branchName && baseBranch) {
-    const result = createWorktree({
-      cwd: originalCwd,
-      branchName,
-      baseBranch,
-    });
-    if (result.success && result.worktreePath) {
-      workingDir = result.worktreePath;
-      worktreePath = result.worktreePath;
-      mainRepoPath = originalCwd; // The original cwd is the main repo
-      gitBranch = branchName;
-      log(`\x1b[38;5;141m[session]\x1b[0m Using worktree: ${workingDir}, main repo: ${mainRepoPath}`);
+    if (remote) {
+      // Create worktree on remote machine via SSH
+      const result = createRemoteWorktree({
+        remote,
+        repoPath: originalCwd,
+        branchName,
+        baseBranch,
+        sparseCheckout,
+        sparseCheckoutPaths,
+      });
+      if (result.success && result.worktreePath) {
+        workingDir = result.worktreePath;
+        worktreePath = result.worktreePath;
+        mainRepoPath = originalCwd;
+        gitBranch = branchName;
+        log(`\x1b[38;5;141m[session]\x1b[0m Using remote worktree: ${workingDir} on ${remote}`);
+      } else {
+        logError(`\x1b[38;5;141m[session]\x1b[0m Failed to create remote worktree:`, result.error);
+      }
     } else {
-      logError(`\x1b[38;5;141m[session]\x1b[0m Failed to create worktree:`, result.error);
+      const result = createWorktree({
+        cwd: originalCwd,
+        branchName,
+        baseBranch,
+        sparseCheckout,
+        sparseCheckoutPaths,
+      });
+      if (result.success && result.worktreePath) {
+        workingDir = result.worktreePath;
+        worktreePath = result.worktreePath;
+        mainRepoPath = originalCwd;
+        gitBranch = branchName;
+        log(`\x1b[38;5;141m[session]\x1b[0m Using worktree: ${workingDir}, main repo: ${mainRepoPath}`);
+      } else {
+        logError(`\x1b[38;5;141m[session]\x1b[0m Failed to create worktree:`, result.error);
+      }
     }
   }
 
-  // If no explicit worktree but we're in a worktree, detect the main repo
-  if (!mainRepoPath) {
+  // For local sessions, detect the main repo from worktree
+  if (!remote && !mainRepoPath) {
     const detectedMainRepo = getMainWorktree(workingDir);
     if (detectedMainRepo && detectedMainRepo !== workingDir) {
       mainRepoPath = detectedMainRepo;
@@ -453,23 +603,39 @@ export function createSession(params: {
     }
   }
 
-  // Get git branch if not already set from worktree
-  if (!gitBranch) {
+  // Get git branch if not already set from worktree (local only)
+  if (!gitBranch && !remote) {
     gitBranch = getGitBranch(workingDir);
   }
 
-  const ptyProcess = spawnPty("/bin/zsh", [], {
-    name: "xterm-256color",
-    cwd: workingDir,
-    env: {
-      ...process.env,
-      TERM: "xterm-256color",
-      // Pass our session ID so the plugin can include it in status updates
-      OPENUI_SESSION_ID: sessionId,
-    },
-    rows: 30,
-    cols: 120,
-  });
+  // Spawn PTY: SSH for remote sessions, local zsh otherwise
+  let ptyProcess;
+  if (remote) {
+    const host = getRemoteHost(remote);
+    ptyProcess = spawnPty("ssh", ["-t", host, `cd ${workingDir} && exec zsh -l`], {
+      name: "xterm-256color",
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        TERM: "xterm-256color",
+      },
+      rows: 30,
+      cols: 120,
+    });
+    log(`\x1b[38;5;141m[session]\x1b[0m Spawned SSH PTY to ${host}, cwd: ${workingDir}`);
+  } else {
+    ptyProcess = spawnPty("/bin/zsh", [], {
+      name: "xterm-256color",
+      cwd: workingDir,
+      env: {
+        ...process.env,
+        TERM: "xterm-256color",
+        OPENUI_SESSION_ID: sessionId,
+      },
+      rows: 30,
+      cols: 120,
+    });
+  }
 
   const now = Date.now();
   const session: Session = {
@@ -478,13 +644,13 @@ export function createSession(params: {
     agentName,
     command,
     cwd: workingDir,
-    originalCwd: mainRepoPath, // Store mother repo when using worktree
+    originalCwd: mainRepoPath,
     gitBranch: gitBranch || undefined,
     worktreePath,
     createdAt: new Date().toISOString(),
     clients: new Set(),
     outputBuffer: [],
-    status: "idle",
+    status: "waiting_input",
     lastOutputTime: now,
     lastInputTime: 0,
     recentOutputSize: 0,
@@ -492,9 +658,7 @@ export function createSession(params: {
     customColor,
     nodeId,
     isRestored: false,
-    ticketId,
-    ticketTitle,
-    ticketUrl,
+    remote,
   };
 
   sessions.set(sessionId, session);
@@ -518,7 +682,6 @@ export function createSession(params: {
     session.lastOutputTime = Date.now();
     session.recentOutputSize += data.length;
 
-    // Just broadcast output - status comes from plugin hooks
     for (const client of session.clients) {
       if (client.readyState === 1) {
         client.send(JSON.stringify({ type: "output", data }));
@@ -526,28 +689,14 @@ export function createSession(params: {
     }
   });
 
-  // Run the command (inject plugin-dir for Claude if available)
-  const finalCommand = injectPluginDir(command, agentId);
+  // Run the command (skip plugin injection for remote - plugin is local only)
+  const finalCommand = remote ? command : injectPluginDir(command, agentId);
   log(`\x1b[38;5;82m[pty-write]\x1b[0m Writing command: ${finalCommand}`);
   setTimeout(() => {
     ptyProcess.write(`${finalCommand}\r`);
+  }, remote ? 1500 : 300); // Longer delay for SSH connection to establish
 
-    // If there's a ticket URL, send it to the agent after a delay
-    if (ticketUrl) {
-      setTimeout(() => {
-        // Use custom template or default
-        const defaultTemplate = "Here is the ticket for this session: {{url}}\n\nPlease use the Linear MCP tool or fetch the URL to read the full ticket details before starting work.";
-        const template = ticketPromptTemplate || defaultTemplate;
-        const ticketPrompt = template
-          .replace(/\{\{url\}\}/g, ticketUrl)
-          .replace(/\{\{id\}\}/g, ticketId || "")
-          .replace(/\{\{title\}\}/g, ticketTitle || "");
-        ptyProcess.write(ticketPrompt + "\r");
-      }, 2000);
-    }
-  }, 300);
-
-  log(`\x1b[38;5;141m[session]\x1b[0m Created ${sessionId} for ${agentName}${ticketId ? ` (ticket: ${ticketId})` : ""}`);
+  log(`\x1b[38;5;141m[session]\x1b[0m Created ${sessionId} for ${agentName}${remote ? ` on ${remote}` : ""}`);
   return { session, cwd: workingDir, gitBranch: gitBranch || undefined };
 }
 
@@ -559,36 +708,53 @@ export function deleteSession(sessionId: string) {
 
   // If this was a worktree session, remove the worktree
   if (session.worktreePath && session.originalCwd) {
-    try {
-      log(`\x1b[38;5;141m[session]\x1b[0m Removing worktree: ${session.worktreePath} from ${session.originalCwd}`);
-      // Use absolute path for worktree removal
-      const result = spawnSync(["git", "worktree", "remove", "-f", session.worktreePath], {
-        cwd: session.originalCwd,
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      if (result.exitCode !== 0) {
-        const stderr = result.stderr?.toString() || "";
-        logError(`\x1b[38;5;196m[session]\x1b[0m Failed to remove worktree: ${stderr}`);
-        // If it failed, try with prune first
-        log(`\x1b[38;5;141m[session]\x1b[0m Trying git worktree prune first...`);
-        spawnSync(["git", "worktree", "prune"], { cwd: session.originalCwd, stdout: "pipe", stderr: "pipe" });
-        // Retry removal
-        const retryResult = spawnSync(["git", "worktree", "remove", "-f", session.worktreePath], {
+    if (session.remote) {
+      // Remote worktree cleanup via SSH
+      try {
+        log(`\x1b[38;5;141m[session]\x1b[0m Removing remote worktree: ${session.worktreePath} on ${session.remote}`);
+        const result = sshExec(session.remote, `cd ${session.originalCwd} && git worktree remove -f ${session.worktreePath}`);
+        if (result.exitCode !== 0) {
+          logError(`\x1b[38;5;196m[session]\x1b[0m Failed to remove remote worktree: ${result.stderr}`);
+          sshExec(session.remote, `cd ${session.originalCwd} && git worktree prune`);
+          const retry = sshExec(session.remote, `cd ${session.originalCwd} && git worktree remove -f ${session.worktreePath}`);
+          if (retry.exitCode === 0) {
+            log(`\x1b[38;5;141m[session]\x1b[0m Remote worktree removed after prune`);
+          }
+        } else {
+          log(`\x1b[38;5;141m[session]\x1b[0m Remote worktree removed successfully`);
+        }
+      } catch (e) {
+        logError(`\x1b[38;5;196m[session]\x1b[0m Error removing remote worktree:`, e);
+      }
+    } else {
+      try {
+        log(`\x1b[38;5;141m[session]\x1b[0m Removing worktree: ${session.worktreePath} from ${session.originalCwd}`);
+        const result = spawnSync(["git", "worktree", "remove", "-f", session.worktreePath], {
           cwd: session.originalCwd,
           stdout: "pipe",
           stderr: "pipe",
         });
-        if (retryResult.exitCode !== 0) {
-          logError(`\x1b[38;5;196m[session]\x1b[0m Retry also failed: ${retryResult.stderr?.toString()}`);
+        if (result.exitCode !== 0) {
+          const stderr = result.stderr?.toString() || "";
+          logError(`\x1b[38;5;196m[session]\x1b[0m Failed to remove worktree: ${stderr}`);
+          log(`\x1b[38;5;141m[session]\x1b[0m Trying git worktree prune first...`);
+          spawnSync(["git", "worktree", "prune"], { cwd: session.originalCwd, stdout: "pipe", stderr: "pipe" });
+          const retryResult = spawnSync(["git", "worktree", "remove", "-f", session.worktreePath], {
+            cwd: session.originalCwd,
+            stdout: "pipe",
+            stderr: "pipe",
+          });
+          if (retryResult.exitCode !== 0) {
+            logError(`\x1b[38;5;196m[session]\x1b[0m Retry also failed: ${retryResult.stderr?.toString()}`);
+          } else {
+            log(`\x1b[38;5;141m[session]\x1b[0m Worktree removed after prune`);
+          }
         } else {
-          log(`\x1b[38;5;141m[session]\x1b[0m Worktree removed after prune`);
+          log(`\x1b[38;5;141m[session]\x1b[0m Worktree removed successfully`);
         }
-      } else {
-        log(`\x1b[38;5;141m[session]\x1b[0m Worktree removed successfully`);
+      } catch (e) {
+        logError(`\x1b[38;5;196m[session]\x1b[0m Error removing worktree:`, e);
       }
-    } catch (e) {
-      logError(`\x1b[38;5;196m[session]\x1b[0m Error removing worktree:`, e);
     }
   } else if (session.cwd && session.cwd.includes("-worktrees/")) {
     // Fallback: Try to detect worktree from cwd path
@@ -627,9 +793,12 @@ export function restoreSessions() {
 
   log(`\x1b[38;5;245m[restore]\x1b[0m Found ${state.nodes.length} saved sessions`);
 
+  const sessionIds: string[] = [];
+
   for (const node of state.nodes) {
     const buffer = loadBuffer(node.sessionId);
-    const gitBranch = getGitBranch(node.cwd);
+    // Only detect git branch locally; skip for remote sessions
+    const gitBranch = node.remote ? null : getGitBranch(node.cwd);
 
     const session: Session = {
       pty: null,
@@ -637,8 +806,8 @@ export function restoreSessions() {
       agentName: node.agentName,
       command: node.command,
       cwd: node.cwd,
-      originalCwd: node.originalCwd,      // Restore for worktree cleanup
-      worktreePath: node.worktreePath,    // Restore for worktree cleanup
+      originalCwd: node.originalCwd,
+      worktreePath: node.worktreePath,
       gitBranch: gitBranch || undefined,
       createdAt: node.createdAt,
       clients: new Set(),
@@ -652,10 +821,187 @@ export function restoreSessions() {
       notes: node.notes,
       nodeId: node.nodeId,
       isRestored: true,
-      claudeSessionId: node.claudeSessionId,  // Restore Claude session ID for --resume
+      claudeSessionId: node.claudeSessionId,
+      remote: node.remote,
     };
 
     sessions.set(node.sessionId, session);
-    log(`\x1b[38;5;245m[restore]\x1b[0m Restored ${node.sessionId} (${node.agentName}) branch: ${gitBranch || 'none'}`);
+    sessionIds.push(node.sessionId);
+    log(`\x1b[38;5;245m[restore]\x1b[0m Restored ${node.sessionId} (${node.agentName}) branch: ${gitBranch || 'none'}${node.remote ? ` remote: ${node.remote}` : ''}`);
   }
+
+  // Auto-resume all sessions with staggered delays to avoid resource contention
+  if (sessionIds.length > 0) {
+    log(`\x1b[38;5;82m[auto-resume]\x1b[0m Starting auto-resume for ${sessionIds.length} sessions...`);
+    sessionIds.forEach((sid, index) => {
+      setTimeout(() => {
+        resumeSession(sid).catch((err) => {
+          log(`\x1b[38;5;196m[auto-resume]\x1b[0m Failed to resume ${sid}: ${err}`);
+        });
+      }, index * 2000); // 2s stagger between each session
+    });
+  }
+}
+
+export async function resumeSession(sessionId: string): Promise<boolean> {
+  const session = sessions.get(sessionId);
+  if (!session) {
+    log(`\x1b[38;5;196m[resume]\x1b[0m Session ${sessionId} not found`);
+    return false;
+  }
+  if (session.pty) {
+    log(`\x1b[38;5;245m[resume]\x1b[0m Session ${sessionId} already has active PTY`);
+    return false;
+  }
+
+  log(`\x1b[38;5;82m[resume]\x1b[0m Resuming ${sessionId} (${session.agentName})...`);
+
+  // Spawn PTY: SSH for remote sessions, local zsh otherwise
+  let ptyProcess;
+  if (session.remote) {
+    const host = getRemoteHost(session.remote);
+    ptyProcess = spawnPty("ssh", ["-t", host, `cd ${session.cwd} && exec zsh -l`], {
+      name: "xterm-256color",
+      cwd: process.cwd(),
+      env: { ...process.env, TERM: "xterm-256color" },
+      rows: 30,
+      cols: 120,
+    });
+  } else {
+    ptyProcess = spawnPty("/bin/zsh", [], {
+      name: "xterm-256color",
+      cwd: session.cwd,
+      env: {
+        ...process.env,
+        TERM: "xterm-256color",
+        OPENUI_SESSION_ID: sessionId,
+      },
+      rows: 30,
+      cols: 120,
+    });
+  }
+
+  session.pty = ptyProcess;
+  session.isRestored = false;
+  session.status = "running";
+  session.lastOutputTime = Date.now();
+  session.outputBuffer = [];
+
+  // Rate-limit output size tracking reset
+  const resetInterval = setInterval(() => {
+    if (!sessions.has(sessionId) || !session.pty) {
+      clearInterval(resetInterval);
+      return;
+    }
+    session.recentOutputSize = Math.max(0, session.recentOutputSize - 50);
+  }, 500);
+
+  // Build the resume command
+  let command = "isaac";
+  let finalCommand = session.remote ? command : injectPluginDir(command, session.agentId);
+
+  const hasSessionId = session.agentId === "claude" && session.claudeSessionId;
+  if (hasSessionId) {
+    finalCommand = finalCommand.replace("isaac", `isaac --resume ${session.claudeSessionId}`);
+    log(`\x1b[38;5;141m[resume]\x1b[0m Attempting resume with session: ${session.claudeSessionId}`);
+  }
+
+  // Retry logic for "No conversation found"
+  let retryAttempt = 0;
+
+  const spawnFreshPty = () => {
+    if (session.remote) {
+      const host = getRemoteHost(session.remote);
+      return spawnPty("ssh", ["-t", host, `cd ${session.cwd} && exec zsh -l`], {
+        name: "xterm-256color",
+        cwd: process.cwd(),
+        env: { ...process.env, TERM: "xterm-256color" },
+        rows: 30,
+        cols: 120,
+      });
+    }
+    return spawnPty("/bin/zsh", [], {
+      name: "xterm-256color",
+      cwd: session.cwd,
+      env: {
+        ...process.env,
+        TERM: "xterm-256color",
+        OPENUI_SESSION_ID: sessionId,
+      },
+      rows: 30,
+      cols: 120,
+    });
+  };
+
+  const restartWithCommand = (cmd: string) => {
+    setTimeout(async () => {
+      if (session.pty) {
+        session.pty.kill();
+      }
+
+      const newPty = spawnFreshPty();
+      session.pty = newPty;
+      session.outputBuffer = [];
+
+      newPty.onData((newData: string) => {
+        session.outputBuffer.push(newData);
+        if (session.outputBuffer.length > 1000) {
+          session.outputBuffer.shift();
+        }
+        session.lastOutputTime = Date.now();
+        for (const client of session.clients) {
+          if (client.readyState === 1) {
+            client.send(JSON.stringify({ type: "output", data: newData }));
+          }
+        }
+
+        if (newData.includes("No conversation found") && retryAttempt < 2) {
+          retryAttempt++;
+          if (retryAttempt === 2) {
+            log(`\x1b[38;5;141m[resume]\x1b[0m --resume failed, starting fresh for ${sessionId}`);
+            const freshCmd = session.remote ? "isaac" : injectPluginDir("isaac", session.agentId);
+            restartWithCommand(freshCmd);
+          }
+        }
+      });
+
+      setTimeout(() => {
+        newPty.write(`${cmd}\r`);
+      }, session.remote ? 1500 : 300);
+    }, 500);
+  };
+
+  // Set up data handler with retry logic
+  ptyProcess.onData((data: string) => {
+    session.outputBuffer.push(data);
+    if (session.outputBuffer.length > 1000) {
+      session.outputBuffer.shift();
+    }
+
+    session.lastOutputTime = Date.now();
+    session.recentOutputSize += data.length;
+
+    for (const client of session.clients) {
+      if (client.readyState === 1) {
+        client.send(JSON.stringify({ type: "output", data }));
+      }
+    }
+
+    if (data.includes("No conversation found") && retryAttempt === 0) {
+      retryAttempt = 1;
+      session.claudeSessionId = undefined;
+
+      log(`\x1b[38;5;141m[resume]\x1b[0m Session ID invalid for ${sessionId}, trying --resume without ID`);
+      const resumeCmd = session.remote ? "isaac --resume" : injectPluginDir("isaac --resume", session.agentId);
+      restartWithCommand(resumeCmd);
+    }
+  });
+
+  // Write the command after shell is ready
+  setTimeout(() => {
+    ptyProcess.write(`${finalCommand}\r`);
+  }, session.remote ? 1500 : 300);
+
+  log(`\x1b[38;5;82m[resume]\x1b[0m Resumed ${sessionId} (${session.agentName})`);
+  return true;
 }

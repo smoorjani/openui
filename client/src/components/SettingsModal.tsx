@@ -1,12 +1,15 @@
 import { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, Key, Check, AlertCircle, Loader2, ExternalLink, GitBranch, Plus, Trash2, Folder, ChevronRight } from "lucide-react";
+import { X, GitBranch, Plus, Trash2, Folder, ChevronRight } from "lucide-react";
 
 interface WorktreeRepo {
   name: string;
   path: string;
   baseBranch: string;
+  sparseCheckout?: boolean;
+  sparseCheckoutPaths?: string[];
+  remote?: string;
 }
 
 interface SettingsModalProps {
@@ -15,20 +18,14 @@ interface SettingsModalProps {
 }
 
 export function SettingsModal({ open, onClose }: SettingsModalProps) {
-  const [apiKey, setApiKey] = useState("");
-  const [hasExistingKey, setHasExistingKey] = useState(false);
-  const [isValidating, setIsValidating] = useState(false);
-  const [validationResult, setValidationResult] = useState<{ valid: boolean; user?: { name: string; email: string }; error?: string } | null>(null);
-  const [defaultBaseBranch, setDefaultBaseBranch] = useState("main");
-  const [createWorktree, setCreateWorktree] = useState(true);
-  const [ticketPromptTemplate, setTicketPromptTemplate] = useState("");
-  const [isSaving, setIsSaving] = useState(false);
-
   const [worktreeRepos, setWorktreeRepos] = useState<WorktreeRepo[]>([]);
   const [showAddRepo, setShowAddRepo] = useState(false);
   const [newRepoName, setNewRepoName] = useState("");
   const [newRepoPath, setNewRepoPath] = useState("");
   const [newRepoBaseBranch, setNewRepoBaseBranch] = useState("main");
+  const [newRepoSparseCheckout, setNewRepoSparseCheckout] = useState(false);
+  const [newRepoSparsePaths, setNewRepoSparsePaths] = useState("");
+  const [newRepoRemote, setNewRepoRemote] = useState("");
   const [browsePath, setBrowsePath] = useState("");
   const [browseDirectories, setBrowseDirectories] = useState<{ name: string; path: string }[]>([]);
   const [showBrowser, setShowBrowser] = useState(false);
@@ -36,16 +33,6 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   // Load existing config
   useEffect(() => {
     if (open) {
-      fetch("/api/linear/config")
-        .then((res) => res.json())
-        .then((config) => {
-          setHasExistingKey(config.hasApiKey);
-          setDefaultBaseBranch(config.defaultBaseBranch || "main");
-          setCreateWorktree(config.createWorktree ?? true);
-          setTicketPromptTemplate(config.ticketPromptTemplate || "");
-        })
-        .catch(console.error);
-
       fetch("/api/worktree/config")
         .then((res) => res.json())
         .then((config) => {
@@ -63,6 +50,9 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
     setNewRepoName("");
     setNewRepoPath("");
     setNewRepoBaseBranch("main");
+    setNewRepoSparseCheckout(false);
+    setNewRepoSparsePaths("");
+    setNewRepoRemote("");
   };
 
   const handleBrowse = async (path?: string) => {
@@ -89,10 +79,17 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const handleAddRepo = async () => {
     if (!newRepoName.trim() || !newRepoPath.trim()) return;
 
+    const sparsePaths = newRepoSparsePaths.trim()
+      ? newRepoSparsePaths.split(/[,\s]+/).filter(Boolean)
+      : undefined;
+
     const newRepo: WorktreeRepo = {
       name: newRepoName.trim(),
       path: newRepoPath.trim(),
       baseBranch: newRepoBaseBranch.trim() || "main",
+      ...(newRepoSparseCheckout && { sparseCheckout: true }),
+      ...(newRepoSparseCheckout && sparsePaths && { sparseCheckoutPaths: sparsePaths }),
+      ...(newRepoRemote.trim() && { remote: newRepoRemote.trim() }),
     };
 
     const updatedRepos = [...worktreeRepos, newRepo];
@@ -124,73 +121,6 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
       });
     } catch (e) {
       console.error("Failed to save worktree repos:", e);
-    }
-  };
-
-  const handleValidate = async () => {
-    if (!apiKey.trim()) return;
-
-    setIsValidating(true);
-    setValidationResult(null);
-
-    try {
-      const res = await fetch("/api/linear/validate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey: apiKey.trim() }),
-      });
-      const result = await res.json();
-      setValidationResult(result);
-    } catch (e) {
-      setValidationResult({ valid: false, error: "Failed to validate" });
-    } finally {
-      setIsValidating(false);
-    }
-  };
-
-  const handleSave = async () => {
-    setIsSaving(true);
-
-    try {
-      await fetch("/api/linear/config", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          apiKey: apiKey.trim() || undefined,
-          defaultBaseBranch,
-          createWorktree,
-          ticketPromptTemplate: ticketPromptTemplate || undefined,
-        }),
-      });
-
-      if (apiKey.trim()) {
-        setHasExistingKey(true);
-      }
-      setApiKey("");
-      setValidationResult(null);
-      onClose();
-    } catch (e) {
-      console.error("Failed to save settings:", e);
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  const handleRemoveKey = async () => {
-    setIsSaving(true);
-    try {
-      await fetch("/api/linear/config", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey: "" }),
-      });
-      setHasExistingKey(false);
-      setApiKey("");
-      setValidationResult(null);
-    } catch (e) {
-      console.error("Failed to remove key:", e);
-    } finally {
-      setIsSaving(false);
     }
   };
 
@@ -226,155 +156,6 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
 
               {/* Content */}
               <div className="p-5 space-y-6 max-h-[60vh] overflow-y-auto">
-                {/* Linear Integration */}
-                <div>
-                  <div className="flex items-center gap-2 mb-3">
-                    <div className="w-6 h-6 rounded bg-indigo-500/20 flex items-center justify-center">
-                      <svg className="w-4 h-4 text-indigo-400" viewBox="0 0 24 24" fill="currentColor">
-                        <path d="M3 7.5L7.5 3H21v13.5L16.5 21H3V7.5z" />
-                      </svg>
-                    </div>
-                    <h3 className="text-sm font-medium text-white">Linear Integration</h3>
-                  </div>
-
-                  {hasExistingKey ? (
-                    <div className="space-y-3">
-                      <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-green-500/10 border border-green-500/20">
-                        <Check className="w-4 h-4 text-green-500" />
-                        <span className="text-sm text-green-400">API key configured</span>
-                        <button
-                          onClick={handleRemoveKey}
-                          className="ml-auto text-xs text-zinc-500 hover:text-red-400 transition-colors"
-                        >
-                          Remove
-                        </button>
-                      </div>
-                      <p className="text-xs text-zinc-500">
-                        You can start sessions from Linear tickets.
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      <p className="text-xs text-zinc-500">
-                        Connect Linear to start agent sessions from tickets.{" "}
-                        <a
-                          href="https://linear.app/settings/api"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-indigo-400 hover:text-indigo-300 inline-flex items-center gap-0.5"
-                        >
-                          Get your API key
-                          <ExternalLink className="w-3 h-3" />
-                        </a>
-                      </p>
-
-                      <div className="flex gap-2">
-                        <div className="relative flex-1">
-                          <Key className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
-                          <input
-                            type="password"
-                            value={apiKey}
-                            onChange={(e) => {
-                              setApiKey(e.target.value);
-                              setValidationResult(null);
-                            }}
-                            placeholder="lin_api_..."
-                            className="w-full pl-9 pr-3 py-2 rounded-md bg-canvas border border-border text-white text-sm placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors"
-                          />
-                        </div>
-                        <button
-                          onClick={handleValidate}
-                          disabled={!apiKey.trim() || isValidating}
-                          className="px-3 py-2 rounded-md bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5"
-                        >
-                          {isValidating ? (
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                          ) : (
-                            "Validate"
-                          )}
-                        </button>
-                      </div>
-
-                      {validationResult && (
-                        <div
-                          className={`flex items-center gap-2 px-3 py-2 rounded-md ${
-                            validationResult.valid
-                              ? "bg-green-500/10 border border-green-500/20"
-                              : "bg-red-500/10 border border-red-500/20"
-                          }`}
-                        >
-                          {validationResult.valid ? (
-                            <>
-                              <Check className="w-4 h-4 text-green-500" />
-                              <span className="text-sm text-green-400">
-                                Connected as {validationResult.user?.name}
-                              </span>
-                            </>
-                          ) : (
-                            <>
-                              <AlertCircle className="w-4 h-4 text-red-500" />
-                              <span className="text-sm text-red-400">
-                                {validationResult.error}
-                              </span>
-                            </>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                {/* Git Settings */}
-                <div>
-                  <h3 className="text-sm font-medium text-white mb-3">Git Settings</h3>
-                  <div className="space-y-3">
-                    <div>
-                      <label className="text-xs text-zinc-500 block mb-1.5">
-                        Default base branch
-                      </label>
-                      <input
-                        type="text"
-                        value={defaultBaseBranch}
-                        onChange={(e) => setDefaultBaseBranch(e.target.value)}
-                        placeholder="main"
-                        className="w-full px-3 py-2 rounded-md bg-canvas border border-border text-white text-sm placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors"
-                      />
-                    </div>
-
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={createWorktree}
-                        onChange={(e) => setCreateWorktree(e.target.checked)}
-                        className="w-4 h-4 rounded border-zinc-600 bg-canvas text-indigo-600 focus:ring-indigo-500 focus:ring-offset-0"
-                      />
-                      <span className="text-sm text-zinc-300">
-                        Create git worktree for ticket branches
-                      </span>
-                    </label>
-                    <p className="text-xs text-zinc-600 ml-6">
-                      Each ticket gets an isolated working directory
-                    </p>
-                  </div>
-                </div>
-
-                {/* Ticket Prompt Template */}
-                <div>
-                  <h3 className="text-sm font-medium text-white mb-3">Ticket Prompt</h3>
-                  <div className="space-y-2">
-                    <p className="text-xs text-zinc-500">
-                      Message sent to the agent when starting from a ticket. Use <code className="text-indigo-400">{"{{url}}"}</code>, <code className="text-indigo-400">{"{{id}}"}</code>, <code className="text-indigo-400">{"{{title}}"}</code> as placeholders.
-                    </p>
-                    <textarea
-                      value={ticketPromptTemplate}
-                      onChange={(e) => setTicketPromptTemplate(e.target.value)}
-                      placeholder="Here is the ticket for this session: {{url}}&#10;&#10;Please use the Linear MCP tool or fetch the URL to read the full ticket details before starting work."
-                      rows={4}
-                      className="w-full px-3 py-2 rounded-md bg-canvas border border-border text-white text-sm placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors resize-none font-mono"
-                    />
-                  </div>
-                </div>
-
                 {/* Worktree Repositories */}
                 <div>
                   <div className="flex items-center justify-between mb-3">
@@ -415,6 +196,16 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                           <span className="text-xs text-zinc-500 px-1.5 py-0.5 rounded bg-surface">
                             {repo.baseBranch}
                           </span>
+                          {repo.remote && (
+                            <span className="text-[10px] text-cyan-400 px-1.5 py-0.5 rounded bg-cyan-500/10">
+                              {repo.remote}
+                            </span>
+                          )}
+                          {repo.sparseCheckout && (
+                            <span className="text-[10px] text-orange-400 px-1.5 py-0.5 rounded bg-orange-500/10">
+                              sparse
+                            </span>
+                          )}
                           <button
                             onClick={() => handleDeleteRepo(index)}
                             className="p-1 rounded text-zinc-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all"
@@ -505,6 +296,42 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                         />
                       </div>
 
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={newRepoSparseCheckout}
+                          onChange={(e) => setNewRepoSparseCheckout(e.target.checked)}
+                          className="w-4 h-4 rounded border-zinc-600 bg-canvas text-orange-600 focus:ring-orange-500 focus:ring-offset-0"
+                        />
+                        <span className="text-xs text-zinc-300">Sparse checkout</span>
+                      </label>
+
+                      {newRepoSparseCheckout && (
+                        <div>
+                          <label className="text-xs text-zinc-500 block mb-1.5">Sparse checkout paths</label>
+                          <input
+                            type="text"
+                            value={newRepoSparsePaths}
+                            onChange={(e) => setNewRepoSparsePaths(e.target.value)}
+                            placeholder="docs, src/lib, tests"
+                            className="w-full px-3 py-2 rounded-md bg-surface border border-border text-white text-sm placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors font-mono"
+                          />
+                          <p className="text-[10px] text-zinc-600 mt-1">Comma or space separated directories</p>
+                        </div>
+                      )}
+
+                      <div>
+                        <label className="text-xs text-zinc-500 block mb-1.5">Remote (optional)</label>
+                        <input
+                          type="text"
+                          value={newRepoRemote}
+                          onChange={(e) => setNewRepoRemote(e.target.value)}
+                          placeholder="e.g. arca"
+                          className="w-full px-3 py-2 rounded-md bg-surface border border-border text-white text-sm placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors"
+                        />
+                        <p className="text-[10px] text-zinc-600 mt-1">SSH remote host for worktree creation (leave empty for local)</p>
+                      </div>
+
                       <div className="flex justify-end gap-2 pt-1">
                         <button
                           onClick={() => {
@@ -530,19 +357,12 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
               </div>
 
               {/* Footer */}
-              <div className="px-5 py-4 border-t border-border flex justify-end gap-2">
+              <div className="px-5 py-4 border-t border-border flex justify-end">
                 <button
                   onClick={onClose}
-                  className="px-3 py-1.5 rounded-md text-sm text-zinc-400 hover:text-white hover:bg-canvas transition-colors"
+                  className="px-4 py-1.5 rounded-md text-sm font-medium bg-white text-canvas hover:bg-zinc-100 transition-colors"
                 >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleSave}
-                  disabled={isSaving || (!!apiKey.trim() && !validationResult?.valid)}
-                  className="px-4 py-1.5 rounded-md text-sm font-medium bg-white text-canvas hover:bg-zinc-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                >
-                  {isSaving ? "Saving..." : "Save"}
+                  Done
                 </button>
               </div>
             </div>

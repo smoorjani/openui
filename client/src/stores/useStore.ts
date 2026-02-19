@@ -28,11 +28,8 @@ export interface AgentSession {
   customColor?: string;
   notes?: string;
   isRestored?: boolean;
-  // Linear ticket info
-  ticketId?: string;
-  ticketTitle?: string;
-  // Current tool being used (from plugin)
   currentTool?: string;
+  remote?: string;
 }
 
 interface AppState {

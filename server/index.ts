@@ -4,7 +4,7 @@ import { serveStatic } from "hono/bun";
 import type { ServerWebSocket } from "bun";
 import { spawn } from "bun-pty";
 import { apiRoutes } from "./routes/api";
-import { sessions, restoreSessions } from "./services/sessionManager";
+import { sessions, restoreSessions, getRemoteHost } from "./services/sessionManager";
 import { saveState } from "./services/persistence";
 import type { WebSocketData } from "./types";
 
@@ -40,10 +40,11 @@ Bun.serve<WebSocketData>({
     if (url.pathname === "/ws/shell") {
       const sessionId = url.searchParams.get("sessionId");
       const cwd = url.searchParams.get("cwd") || process.cwd();
+      const remote = url.searchParams.get("remote") || undefined;
       if (!sessionId) return new Response("Session ID required", { status: 400 });
 
       const shellId = `shell-${sessionId}`;
-      const upgraded = server.upgrade(req, { data: { sessionId: shellId, isShell: true, cwd } });
+      const upgraded = server.upgrade(req, { data: { sessionId: shellId, isShell: true, cwd, remote } });
       if (upgraded) return undefined;
       return new Response("WebSocket upgrade failed", { status: 400 });
     }
@@ -52,23 +53,35 @@ Bun.serve<WebSocketData>({
   },
   websocket: {
     open(ws) {
-      const { sessionId, isShell, cwd } = ws.data;
+      const { sessionId, isShell, cwd, remote } = ws.data;
 
       if (isShell) {
-        log(`\x1b[38;5;245m[ws]\x1b[0m Shell connected: ${sessionId}`);
+        log(`\x1b[38;5;245m[ws]\x1b[0m Shell connected: ${sessionId}${remote ? ` (remote: ${remote})` : ""}`);
 
         let shell = shellTerminals.get(sessionId);
         if (!shell) {
-          const ptyProcess = spawn("/bin/zsh", [], {
-            name: "xterm-256color",
-            cwd: cwd || process.cwd(),
-            env: {
-              ...process.env,
-              TERM: "xterm-256color",
-            },
-            rows: 30,
-            cols: 120,
-          });
+          let ptyProcess;
+          if (remote) {
+            const host = getRemoteHost(remote);
+            ptyProcess = spawn("ssh", ["-t", host, `cd ${cwd} && exec zsh -l`], {
+              name: "xterm-256color",
+              cwd: process.cwd(),
+              env: { ...process.env, TERM: "xterm-256color" },
+              rows: 30,
+              cols: 120,
+            });
+          } else {
+            ptyProcess = spawn("/bin/zsh", [], {
+              name: "xterm-256color",
+              cwd: cwd || process.cwd(),
+              env: {
+                ...process.env,
+                TERM: "xterm-256color",
+              },
+              rows: 30,
+              cols: 120,
+            });
+          }
 
           shell = { pty: ptyProcess, clients: new Set() };
           shellTerminals.set(sessionId, shell);
@@ -77,6 +90,15 @@ Bun.serve<WebSocketData>({
             for (const client of shell!.clients) {
               if (client.readyState === 1) {
                 client.send(JSON.stringify({ type: "output", data }));
+              }
+            }
+          });
+
+          ptyProcess.onExit(() => {
+            log(`\x1b[38;5;245m[ws]\x1b[0m Shell process exited: ${sessionId}`);
+            for (const client of shell!.clients) {
+              if (client.readyState === 1) {
+                client.send(JSON.stringify({ type: "exited" }));
               }
             }
           });
@@ -132,16 +154,28 @@ Bun.serve<WebSocketData>({
               log(`\x1b[38;5;245m[ws]\x1b[0m Restarting shell: ${sessionId}`);
               shell.pty.kill();
 
-              const newPty = spawn("/bin/zsh", [], {
-                name: "xterm-256color",
-                cwd: ws.data.cwd || process.cwd(),
-                env: {
-                  ...process.env,
-                  TERM: "xterm-256color",
-                },
-                rows: 30,
-                cols: 120,
-              });
+              let newPty;
+              if (ws.data.remote) {
+                const restartHost = getRemoteHost(ws.data.remote);
+                newPty = spawn("ssh", ["-t", restartHost, `cd ${ws.data.cwd} && exec zsh -l`], {
+                  name: "xterm-256color",
+                  cwd: process.cwd(),
+                  env: { ...process.env, TERM: "xterm-256color" },
+                  rows: 30,
+                  cols: 120,
+                });
+              } else {
+                newPty = spawn("/bin/zsh", [], {
+                  name: "xterm-256color",
+                  cwd: ws.data.cwd || process.cwd(),
+                  env: {
+                    ...process.env,
+                    TERM: "xterm-256color",
+                  },
+                  rows: 30,
+                  cols: 120,
+                });
+              }
 
               shell.pty = newPty;
 
@@ -149,6 +183,15 @@ Bun.serve<WebSocketData>({
                 for (const client of shell.clients) {
                   if (client.readyState === 1) {
                     client.send(JSON.stringify({ type: "output", data }));
+                  }
+                }
+              });
+
+              newPty.onExit(() => {
+                log(`\x1b[38;5;245m[ws]\x1b[0m Restarted shell process exited: ${sessionId}`);
+                for (const client of shell.clients) {
+                  if (client.readyState === 1) {
+                    client.send(JSON.stringify({ type: "exited" }));
                   }
                 }
               });
@@ -223,7 +266,6 @@ process.on("SIGINT", () => {
   saveState(sessions);
   for (const [, session] of sessions) {
     if (session.pty) session.pty.kill();
-    if (session.stateTrackerPty) session.stateTrackerPty.kill();
   }
   for (const [, shell] of shellTerminals) {
     shell.pty.kill();

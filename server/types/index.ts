@@ -25,10 +25,6 @@ export interface Session {
   nodeId: string;
   isRestored?: boolean;
   position?: { x: number; y: number };
-  // Linear ticket info
-  ticketId?: string;
-  ticketTitle?: string;
-  ticketUrl?: string;
   // Plugin-reported status
   pluginReportedStatus?: boolean;
   lastPluginStatusTime?: number;
@@ -38,34 +34,17 @@ export interface Session {
   currentTool?: string;
   // Last hook event received
   lastHookEvent?: string;
-  // Permission detection
-  preToolTime?: number;
-  permissionTimeout?: ReturnType<typeof setTimeout>;
-}
-
-export interface LinearTicket {
-  id: string;
-  identifier: string;
-  title: string;
-  url: string;
-  state: { name: string; color: string };
-  priority: number;
-  assignee?: { name: string };
-  team?: { name: string; key: string };
-}
-
-export interface LinearConfig {
-  apiKey?: string;
-  defaultTeamId?: string;
-  defaultBaseBranch?: string;
-  createWorktree?: boolean;
-  ticketPromptTemplate?: string;
+  // Remote execution (e.g. "arca" for SSH-based sessions)
+  remote?: string;
 }
 
 export interface WorktreeRepo {
   name: string;
   path: string;
   baseBranch: string;
+  sparseCheckout?: boolean;
+  sparseCheckoutPaths?: string[];
+  remote?: string; // e.g. "arca" - creates worktree on remote machine via SSH
 }
 
 export interface WorktreeConfig {
@@ -87,6 +66,7 @@ export interface PersistedNode {
   notes?: string;
   position: { x: number; y: number };
   claudeSessionId?: string;  // Claude Code's internal session ID for --resume
+  remote?: string; // Remote host for SSH-based sessions
 }
 
 export interface PersistedCategory {
@@ -116,4 +96,5 @@ export interface WebSocketData {
   sessionId: string;
   isShell?: boolean;
   cwd?: string;
+  remote?: string; // Remote host for SSH-based shell terminals
 }

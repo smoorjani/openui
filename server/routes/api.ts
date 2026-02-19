@@ -1,19 +1,11 @@
 import { Hono } from "hono";
 import type { Agent } from "../types";
-import { sessions, createSession, deleteSession, injectPluginDir } from "../services/sessionManager";
+import { sessions, createSession, deleteSession, resumeSession, injectPluginDir, getRemoteHost } from "../services/sessionManager";
 import { loadState, saveState, savePositions, getDataDir } from "../services/persistence";
 import {
-  loadConfig,
-  saveConfig,
-  fetchTeams,
-  fetchMyTickets,
-  searchTickets,
-  fetchTicketByIdentifier,
-  validateApiKey,
-  getCurrentUser,
   loadWorktreeConfig,
   saveWorktreeConfig,
-} from "../services/linear";
+} from "../services/worktreeConfig";
 
 const LAUNCH_CWD = process.env.LAUNCH_CWD || process.cwd();
 const QUIET = !!process.env.OPENUI_QUIET;
@@ -70,7 +62,7 @@ apiRoutes.get("/agents", (c) => {
     {
       id: "claude",
       name: "Claude Code",
-      command: "llm agent claude",
+      command: "isaac",
       description: "Anthropic's official CLI for Claude",
       color: "#F97316",
       icon: "sparkles",
@@ -96,8 +88,7 @@ apiRoutes.get("/sessions", (c) => {
       customColor: session.customColor,
       notes: session.notes,
       isRestored: session.isRestored,
-      ticketId: session.ticketId,
-      ticketTitle: session.ticketTitle,
+      remote: session.remote,
     };
   });
   return c.json(sessionList);
@@ -153,21 +144,16 @@ apiRoutes.post("/sessions", async (c) => {
     nodeId,
     customName,
     customColor,
-    // Ticket and worktree options
-    ticketId,
-    ticketTitle,
-    ticketUrl,
     branchName,
     baseBranch,
     createWorktree: createWorktreeFlag,
+    sparseCheckout,
+    sparseCheckoutPaths,
+    remote,
   } = body;
 
   const sessionId = `session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   const workingDir = cwd || LAUNCH_CWD;
-
-  // Load ticket prompt template from Linear config
-  const linearConfig = loadConfig();
-  const ticketPromptTemplate = linearConfig.ticketPromptTemplate;
 
   const result = createSession({
     sessionId,
@@ -178,13 +164,12 @@ apiRoutes.post("/sessions", async (c) => {
     nodeId,
     customName,
     customColor,
-    ticketId,
-    ticketTitle,
-    ticketUrl,
     branchName,
     baseBranch,
     createWorktreeFlag,
-    ticketPromptTemplate,
+    sparseCheckout,
+    sparseCheckoutPaths,
+    remote,
   });
 
   saveState(sessions);
@@ -193,6 +178,7 @@ apiRoutes.post("/sessions", async (c) => {
     nodeId,
     cwd: result.cwd,
     gitBranch: result.gitBranch,
+    remote,
   });
 });
 
@@ -200,129 +186,15 @@ apiRoutes.post("/sessions/:sessionId/restart", async (c) => {
   const sessionId = c.req.param("sessionId");
   const session = sessions.get(sessionId);
   if (!session) return c.json({ error: "Session not found" }, 404);
-  if (session.pty) return c.json({ error: "Session already running" }, 400);
 
-  const { spawn } = await import("bun-pty");
-  const ptyProcess = spawn("/bin/zsh", [], {
-    name: "xterm-256color",
-    cwd: session.cwd,
-    env: {
-      ...process.env,
-      TERM: "xterm-256color",
-      OPENUI_SESSION_ID: sessionId,  // Pass session ID for plugin hooks
-    },
-    rows: 30,
-    cols: 120,
-  });
-
-  session.pty = ptyProcess;
-  session.isRestored = false;
-  session.status = "running";
-  session.lastOutputTime = Date.now();
-
-  const resetInterval = setInterval(() => {
-    if (!sessions.has(sessionId) || !session.pty) {
-      clearInterval(resetInterval);
-      return;
-    }
-    session.recentOutputSize = Math.max(0, session.recentOutputSize - 50);
-  }, 500);
-
-  // Build the command - try with session ID first if available
-  let command = "llm agent claude";
-  let finalCommand = injectPluginDir(command, session.agentId);
-
-  // Try to resume with specific session ID if we have one
-  const hasSessionId = session.agentId === "claude" && session.claudeSessionId;
-  if (hasSessionId) {
-    finalCommand = finalCommand.replace("llm agent claude", `llm agent claude --resume ${session.claudeSessionId}`);
-    log(`\x1b[38;5;141m[session]\x1b[0m Attempting to resume Claude session: ${session.claudeSessionId}`);
+  // Kill existing PTY if present (e.g. from failed auto-resume)
+  if (session.pty) {
+    try { session.pty.kill(); } catch {}
+    session.pty = null;
   }
 
-  // Watch for "No conversation found" error and retry with --resume (no ID), then without
-  let retryAttempt = 0; // 0 = initial, 1 = tried --resume without ID, 2 = tried without --resume
-
-  const restartWithCommand = (cmd: string) => {
-    setTimeout(async () => {
-      if (session.pty) {
-        session.pty.kill();
-      }
-
-      const newPty = spawn("/bin/zsh", [], {
-        name: "xterm-256color",
-        cwd: session.cwd,
-        env: {
-          ...process.env,
-          TERM: "xterm-256color",
-          OPENUI_SESSION_ID: sessionId,
-        },
-        rows: 30,
-        cols: 120,
-      });
-
-      session.pty = newPty;
-      session.outputBuffer = [];
-
-      newPty.onData((newData: string) => {
-        session.outputBuffer.push(newData);
-        if (session.outputBuffer.length > 1000) {
-          session.outputBuffer.shift();
-        }
-        session.lastOutputTime = Date.now();
-        for (const client of session.clients) {
-          if (client.readyState === 1) {
-            client.send(JSON.stringify({ type: "output", data: newData }));
-          }
-        }
-
-        // Check for errors and retry if needed
-        if (newData.includes("No conversation found") && retryAttempt < 2) {
-          retryAttempt++;
-          if (retryAttempt === 2) {
-            // Final attempt: no --resume at all
-            log(`\x1b[38;5;141m[session]\x1b[0m --resume failed, starting fresh`);
-            const freshCmd = injectPluginDir("llm agent claude", session.agentId);
-            restartWithCommand(freshCmd);
-          }
-        }
-      });
-
-      setTimeout(() => {
-        newPty.write(`${cmd}\r`);
-      }, 300);
-    }, 500);
-  };
-
-  ptyProcess.onData((data: string) => {
-    session.outputBuffer.push(data);
-    if (session.outputBuffer.length > 1000) {
-      session.outputBuffer.shift();
-    }
-
-    session.lastOutputTime = Date.now();
-    session.recentOutputSize += data.length;
-
-    for (const client of session.clients) {
-      if (client.readyState === 1) {
-        client.send(JSON.stringify({ type: "output", data }));
-      }
-    }
-
-    // Check for invalid session ID error and retry
-    if (data.includes("No conversation found") && retryAttempt === 0) {
-      retryAttempt = 1;
-      session.claudeSessionId = undefined;
-
-      // First retry: use --resume without specific ID (lets Claude pick most recent)
-      log(`\x1b[38;5;141m[session]\x1b[0m Session ID invalid, trying --resume without ID`);
-      const resumeCmd = injectPluginDir("llm agent claude --resume", session.agentId);
-      restartWithCommand(resumeCmd);
-    }
-  });
-
-  setTimeout(() => {
-    ptyProcess.write(`${finalCommand}\r`);
-  }, 300);
+  const success = await resumeSession(sessionId);
+  if (!success) return c.json({ error: "Failed to resume session" }, 500);
 
   log(`\x1b[38;5;141m[session]\x1b[0m Restarted ${sessionId}`);
   return c.json({ success: true });
@@ -389,58 +261,37 @@ apiRoutes.post("/status-update", async (c) => {
       session.claudeSessionId = claudeSessionId;
     }
 
-    // Handle pre_tool/post_tool for permission detection
+    // Map hook statuses to UI statuses
+    // Hook events → status mapping:
+    //   PreToolUse(*)           → pre_tool  → tool_calling (or waiting_input for AskUserQuestion)
+    //   PermissionRequest(*)    → waiting_input (permission dialog shown)
+    //   PostToolUse(*)          → post_tool → running
+    //   PostToolUseFailure(*)   → post_tool → running (tool failed, Claude still working)
+    //   Notification(idle/perm) → waiting_input
+    //   UserPromptSubmit        → running
+    //   Stop                    → idle
+    //   SubagentStart/Stop      → running
+    //   SessionStart(startup)   → waiting_input
+    //   SessionStart(resume)    → running
+    //   SessionEnd              → disconnected
     let effectiveStatus = status;
 
     if (status === "pre_tool") {
-      // PreToolUse fired - tool is about to run (or waiting for permission)
-      // Stay as running, track the tool, and start a timer
-      effectiveStatus = "running";
+      // PreToolUse fired — check tool name for special cases
+      if (toolName === "AskUserQuestion" || toolName === "ExitPlanMode") {
+        effectiveStatus = "waiting_input";
+      } else {
+        effectiveStatus = "tool_calling";
+      }
       session.currentTool = toolName;
-      session.preToolTime = Date.now();
-
-      // Clear any existing permission timeout
-      if (session.permissionTimeout) {
-        clearTimeout(session.permissionTimeout);
-      }
-
-      // If we don't get post_tool within 10 seconds, assume waiting for permission
-      session.permissionTimeout = setTimeout(() => {
-        // Only switch to waiting_input if we haven't received post_tool yet
-        if (session.preToolTime) {
-          session.status = "waiting_input";
-          // Broadcast the status change
-          for (const client of session.clients) {
-            if (client.readyState === 1) {
-              client.send(JSON.stringify({
-                type: "status",
-                status: "waiting_input",
-                isRestored: session.isRestored,
-                currentTool: session.currentTool,
-                hookEvent: "permission_timeout",
-              }));
-            }
-          }
-        }
-      }, 10000);
     } else if (status === "post_tool") {
-      // PostToolUse fired - tool completed, clear the permission timeout
+      // PostToolUse or PostToolUseFailure — tool done, Claude is thinking
       effectiveStatus = "running";
-      session.preToolTime = undefined;
-      if (session.permissionTimeout) {
-        clearTimeout(session.permissionTimeout);
-        session.permissionTimeout = undefined;
-      }
       session.currentTool = undefined;
     } else {
-      // For other statuses, clear tool tracking if not actively using tools
+      // For idle/waiting_input/disconnected, clear tool tracking
       if (status !== "tool_calling" && status !== "running") {
         session.currentTool = undefined;
-      }
-      session.preToolTime = undefined;
-      if (session.permissionTimeout) {
-        clearTimeout(session.permissionTimeout);
-        session.permissionTimeout = undefined;
       }
     }
 
@@ -530,39 +381,6 @@ apiRoutes.delete("/categories/:categoryId", (c) => {
   return c.json({ success: true });
 });
 
-// ============ Linear Integration ============
-
-// Default ticket prompt template
-const DEFAULT_TICKET_PROMPT = "Here is the ticket for this session: {{url}}\n\nPlease use the Linear MCP tool or fetch the URL to read the full ticket details before starting work.";
-
-// Get Linear config
-apiRoutes.get("/linear/config", (c) => {
-  const config = loadConfig();
-  // Don't expose full API key, just whether it's set
-  return c.json({
-    hasApiKey: !!config.apiKey,
-    defaultTeamId: config.defaultTeamId,
-    defaultBaseBranch: config.defaultBaseBranch || "main",
-    createWorktree: config.createWorktree ?? true,
-    ticketPromptTemplate: config.ticketPromptTemplate || DEFAULT_TICKET_PROMPT,
-  });
-});
-
-// Save Linear config
-apiRoutes.post("/linear/config", async (c) => {
-  const body = await c.req.json();
-  const config = loadConfig();
-
-  if (body.apiKey !== undefined) config.apiKey = body.apiKey;
-  if (body.defaultTeamId !== undefined) config.defaultTeamId = body.defaultTeamId;
-  if (body.defaultBaseBranch !== undefined) config.defaultBaseBranch = body.defaultBaseBranch;
-  if (body.createWorktree !== undefined) config.createWorktree = body.createWorktree;
-  if (body.ticketPromptTemplate !== undefined) config.ticketPromptTemplate = body.ticketPromptTemplate;
-
-  saveConfig(config);
-  return c.json({ success: true });
-});
-
 // ============ Worktree Configuration ============
 
 // Get worktree repos config
@@ -582,94 +400,6 @@ apiRoutes.post("/worktree/config", async (c) => {
 
   saveWorktreeConfig(worktreeRepos);
   return c.json({ success: true });
-});
-
-// Validate API key
-apiRoutes.post("/linear/validate", async (c) => {
-  const { apiKey } = await c.req.json();
-  if (!apiKey) return c.json({ valid: false, error: "No API key provided" });
-
-  try {
-    const valid = await validateApiKey(apiKey);
-    if (valid) {
-      const user = await getCurrentUser(apiKey);
-      return c.json({ valid: true, user });
-    }
-    return c.json({ valid: false, error: "Invalid API key" });
-  } catch (e: any) {
-    return c.json({ valid: false, error: e.message });
-  }
-});
-
-// Get Linear teams
-apiRoutes.get("/linear/teams", async (c) => {
-  const config = loadConfig();
-  if (!config.apiKey) return c.json({ error: "Linear not configured" }, 400);
-
-  try {
-    const teams = await fetchTeams(config.apiKey);
-    return c.json(teams);
-  } catch (e: any) {
-    return c.json({ error: e.message }, 500);
-  }
-});
-
-// Get my tickets
-apiRoutes.get("/linear/tickets", async (c) => {
-  log(`\x1b[38;5;141m[api]\x1b[0m GET /linear/tickets called`);
-  const config = loadConfig();
-  log(`\x1b[38;5;141m[api]\x1b[0m Config loaded, hasApiKey:`, !!config.apiKey);
-
-  if (!config.apiKey) {
-    log(`\x1b[38;5;141m[api]\x1b[0m No API key, returning 400`);
-    return c.json({ error: "Linear not configured" }, 400);
-  }
-
-  const teamId = c.req.query("teamId") || config.defaultTeamId;
-  log(`\x1b[38;5;141m[api]\x1b[0m TeamId:`, teamId || "(none)");
-
-  try {
-    const tickets = await fetchMyTickets(config.apiKey, teamId);
-    log(`\x1b[38;5;141m[api]\x1b[0m Returning ${tickets.length} tickets`);
-    return c.json(tickets);
-  } catch (e: any) {
-    logError(`\x1b[38;5;141m[api]\x1b[0m Error fetching tickets:`, e.message);
-    return c.json({ error: e.message }, 500);
-  }
-});
-
-// Search tickets
-apiRoutes.get("/linear/search", async (c) => {
-  const config = loadConfig();
-  if (!config.apiKey) return c.json({ error: "Linear not configured" }, 400);
-
-  const query = c.req.query("q");
-  if (!query) return c.json({ error: "Search query required" }, 400);
-
-  const teamId = c.req.query("teamId") || config.defaultTeamId;
-
-  try {
-    const tickets = await searchTickets(config.apiKey, query, teamId);
-    return c.json(tickets);
-  } catch (e: any) {
-    return c.json({ error: e.message }, 500);
-  }
-});
-
-// Get ticket by identifier
-apiRoutes.get("/linear/ticket/:identifier", async (c) => {
-  const config = loadConfig();
-  if (!config.apiKey) return c.json({ error: "Linear not configured" }, 400);
-
-  const identifier = c.req.param("identifier");
-
-  try {
-    const ticket = await fetchTicketByIdentifier(config.apiKey, identifier);
-    if (!ticket) return c.json({ error: "Ticket not found" }, 404);
-    return c.json(ticket);
-  } catch (e: any) {
-    return c.json({ error: e.message }, 500);
-  }
 });
 
 // ============ GitHub Integration ============

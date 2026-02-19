@@ -35,10 +35,9 @@ interface AgentNodeCardProps {
   status: AgentStatus;
   currentTool?: string;
   cwd?: string;
-  originalCwd?: string; // Mother repo path when using worktrees
+  originalCwd?: string;
   gitBranch?: string;
-  ticketId?: string;
-  ticketTitle?: string;
+  remote?: string;
 }
 
 export function AgentNodeCard({
@@ -52,8 +51,7 @@ export function AgentNodeCard({
   cwd,
   originalCwd,
   gitBranch,
-  ticketId,
-  ticketTitle,
+  remote,
 }: AgentNodeCardProps) {
   // agentId is available for future use if needed
   void agentId;
@@ -183,21 +181,16 @@ export function AgentNodeCard({
           </div>
         </div>
 
-        {/* Ticket info */}
-        {ticketId && (
-          <div className="mt-2.5 px-2 py-1.5 rounded-md bg-indigo-500/10 border border-indigo-500/20">
-            <div className="flex items-center gap-1.5">
-              <span className="text-[10px] font-mono font-semibold text-indigo-400">{ticketId}</span>
-            </div>
-            {ticketTitle && (
-              <p className="text-[10px] text-indigo-300/70 truncate mt-0.5">{ticketTitle}</p>
-            )}
-          </div>
-        )}
-
         {/* Repo & Branch */}
-        {(dirName || gitBranch) && (
+        {(dirName || gitBranch || remote) && (
           <div className="mt-2 space-y-1">
+            {remote && (
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] text-cyan-400 px-1.5 py-0.5 rounded bg-cyan-500/10 font-medium">
+                  {remote}
+                </span>
+              </div>
+            )}
             {dirName && (
               <div className="flex items-center gap-1.5">
                 <Folder className="w-3.5 h-3.5 text-zinc-500 flex-shrink-0" />

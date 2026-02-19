@@ -156,8 +156,7 @@ function AppContent() {
             customColor: session.customColor,
             notes: session.notes,
             isRestored: session.isRestored,
-            ticketId: session.ticketId,
-            ticketTitle: session.ticketTitle,
+            remote: session.remote,
           });
 
           restoredNodes.push({

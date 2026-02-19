@@ -1,17 +1,18 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useState } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { RotateCcw } from "lucide-react";
+import { RotateCcw, AlertTriangle } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
 
 interface ShellTerminalProps {
   sessionId: string;
   cwd: string;
   color: string;
+  remote?: string;
 }
 
-export function ShellTerminal({ sessionId, cwd, color }: ShellTerminalProps) {
+export function ShellTerminal({ sessionId, cwd, color, remote }: ShellTerminalProps) {
   const terminalRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<XTerm | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -19,6 +20,7 @@ export function ShellTerminal({ sessionId, cwd, color }: ShellTerminalProps) {
   const reconnectAttemptRef = useRef(0);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
+  const [shellExited, setShellExited] = useState(false);
 
   useEffect(() => {
     if (!terminalRef.current || !sessionId) return;
@@ -78,7 +80,8 @@ export function ShellTerminal({ sessionId, cwd, color }: ShellTerminalProps) {
     fitAddonRef.current = fitAddon;
 
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${protocol}//${window.location.host}/ws/shell?sessionId=${sessionId}&cwd=${encodeURIComponent(cwd)}`;
+    const remoteParam = remote ? `&remote=${encodeURIComponent(remote)}` : "";
+    const wsUrl = `${protocol}//${window.location.host}/ws/shell?sessionId=${sessionId}&cwd=${encodeURIComponent(cwd)}${remoteParam}`;
 
     const connectWs = () => {
       if (!mountedRef.current) return;
@@ -98,6 +101,11 @@ export function ShellTerminal({ sessionId, cwd, color }: ShellTerminalProps) {
           const msg = JSON.parse(event.data);
           if (msg.type === "output") {
             term.write(msg.data);
+          } else if (msg.type === "exited") {
+            setShellExited(true);
+            term.write("\r\n\x1b[38;5;208mShell process exited. Click restart to respawn.\x1b[0m\r\n");
+          } else if (msg.type === "restarted") {
+            setShellExited(false);
           }
         } catch {
           term.write(event.data);
@@ -166,11 +174,12 @@ export function ShellTerminal({ sessionId, cwd, color }: ShellTerminalProps) {
       wsRef.current?.close();
       term.dispose();
     };
-  }, [sessionId, cwd, color]);
+  }, [sessionId, cwd, color, remote]);
 
   const handleRestart = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: "restart" }));
+      setShellExited(false);
       if (xtermRef.current) {
         xtermRef.current.clear();
       }
@@ -179,13 +188,24 @@ export function ShellTerminal({ sessionId, cwd, color }: ShellTerminalProps) {
 
   return (
     <div className="relative w-full h-full">
-      <button
-        onClick={handleRestart}
-        className="absolute top-2 right-2 z-10 p-1.5 rounded bg-zinc-800/80 hover:bg-zinc-700 text-zinc-400 hover:text-white transition-colors"
-        title="Restart shell"
-      >
-        <RotateCcw className="w-3.5 h-3.5" />
-      </button>
+      {shellExited ? (
+        <button
+          onClick={handleRestart}
+          className="absolute top-2 right-2 z-10 px-3 py-1.5 rounded bg-orange-600 hover:bg-orange-500 text-white text-xs font-medium transition-colors flex items-center gap-1.5"
+          title="Restart shell"
+        >
+          <AlertTriangle className="w-3.5 h-3.5" />
+          Restart Shell
+        </button>
+      ) : (
+        <button
+          onClick={handleRestart}
+          className="absolute top-2 right-2 z-10 p-1.5 rounded bg-zinc-800/80 hover:bg-zinc-700 text-zinc-400 hover:text-white transition-colors"
+          title="Restart shell"
+        >
+          <RotateCcw className="w-3.5 h-3.5" />
+        </button>
+      )}
       <div
         ref={terminalRef}
         className="w-full h-full"

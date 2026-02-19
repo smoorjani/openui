@@ -55,9 +55,9 @@ export function saveState(sessions: Map<string, Session>) {
       customName: session.customName,
       customColor: session.customColor,
       notes: session.notes,
-      icon: session.icon,
       position: session.position || existingNode?.position || { x: 0, y: 0 },
-      claudeSessionId: session.claudeSessionId,  // Persist Claude session ID for --resume
+      claudeSessionId: session.claudeSessionId,
+      remote: session.remote,
     });
 
     saveBuffer(sessionId, session.outputBuffer);

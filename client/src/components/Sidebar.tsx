@@ -26,9 +26,9 @@ type TerminalTab = "claude" | "shell";
 
 const statusConfig: Record<AgentStatus, { label: string; color: string }> = {
   running: { label: "Running", color: "#22C55E" },
-  waiting_input: { label: "Waiting for input", color: "#FBBF24" },
+  waiting_input: { label: "Waiting for input", color: "#F97316" },
   tool_calling: { label: "Tool Calling", color: "#8B5CF6" },
-  idle: { label: "Idle", color: "#6B7280" },
+  idle: { label: "Idle", color: "#FBBF24" },
   disconnected: { label: "Disconnected", color: "#EF4444" },
   error: { label: "Error", color: "#EF4444" },
 };
@@ -215,7 +215,6 @@ export function Sidebar() {
                           method: "POST",
                         });
                         if (res.ok) {
-                          // Force terminal recreation
                           setTerminalKey(k => k + 1);
                           updateSession(selectedNodeId!, { status: "running", isRestored: false });
                         }
@@ -438,6 +437,7 @@ export function Sidebar() {
                   sessionId={session.sessionId}
                   cwd={session.cwd}
                   color={displayColor}
+                  remote={session.remote}
                 />
               </div>
             </div>
