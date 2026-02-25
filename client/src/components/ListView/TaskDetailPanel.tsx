@@ -33,7 +33,7 @@ interface TaskDetailPanelProps {
 }
 
 export function TaskDetailPanel({ nodeId, onClose }: TaskDetailPanelProps) {
-  const { sessions, updateSession } = useStore();
+  const { sessions, updateSession, setNewSessionModalOpen, setNewSessionForNodeId } = useStore();
   const session = nodeId ? sessions.get(nodeId) : null;
 
   const [terminalKey, setTerminalKey] = useState(0);
@@ -61,7 +61,7 @@ export function TaskDetailPanel({ nodeId, onClose }: TaskDetailPanelProps) {
 
   const displayColor = session.customColor || session.color || "#888";
   const statusInfo = statusConfig[session.status || "idle"];
-  const isDisconnected = session.status === "disconnected" || session.isRestored;
+  const isDisconnected = session.status === "disconnected" || session.status === "error" || session.isRestored;
 
   const handleResume = async () => {
     try {
@@ -97,18 +97,36 @@ export function TaskDetailPanel({ nodeId, onClose }: TaskDetailPanelProps) {
         </div>
       </div>
 
-      {/* Disconnected banner */}
+      {/* Disconnected / error banner */}
       {isDisconnected && (
-        <div className="flex-shrink-0 px-4 py-2 bg-red-500/10 border-b border-red-500/20">
-          <div className="flex items-center gap-2">
-            <p className="text-xs text-red-400 flex-1">Session disconnected</p>
-            <button
-              onClick={handleResume}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-green-600 text-white text-xs font-medium hover:bg-green-700 transition-colors"
-            >
-              <RotateCcw className="w-3 h-3" />
-              Resume
-            </button>
+        <div className="flex-shrink-0 px-4 py-3 bg-red-500/10 border-b border-red-500/20">
+          <div className="space-y-2.5">
+            <div>
+              <p className="text-sm text-red-400 font-medium">
+                {session.status === "error" ? "Session Error" : "Session Disconnected"}
+              </p>
+              <p className="text-xs text-red-400/70 mt-0.5">Resume to continue or start a new session.</p>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={handleResume}
+                className="flex-1 flex items-center justify-center gap-2 px-3 py-1.5 rounded-md bg-green-600 text-white text-sm font-medium hover:bg-green-700 transition-colors"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                Resume
+              </button>
+              <button
+                onClick={() => {
+                  if (nodeId) {
+                    setNewSessionForNodeId(nodeId);
+                    setNewSessionModalOpen(true);
+                  }
+                }}
+                className="flex-1 flex items-center justify-center gap-2 px-3 py-1.5 rounded-md bg-zinc-700 text-white text-sm font-medium hover:bg-zinc-600 transition-colors"
+              >
+                New Session
+              </button>
+            </div>
           </div>
         </div>
       )}

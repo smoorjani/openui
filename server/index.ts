@@ -63,7 +63,7 @@ Bun.serve<WebSocketData>({
           let ptyProcess;
           if (remote) {
             const host = getRemoteHost(remote);
-            ptyProcess = spawn("ssh", ["-t", host, `cd ${cwd} && exec zsh -l`], {
+            ptyProcess = spawn("ssh", ["-t", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", host, `cd ${cwd} && exec zsh -l`], {
               name: "xterm-256color",
               cwd: process.cwd(),
               env: { ...process.env, TERM: "xterm-256color" },
@@ -158,7 +158,7 @@ Bun.serve<WebSocketData>({
               let newPty;
               if (ws.data.remote) {
                 const restartHost = getRemoteHost(ws.data.remote);
-                newPty = spawn("ssh", ["-t", restartHost, `cd ${ws.data.cwd} && exec zsh -l`], {
+                newPty = spawn("ssh", ["-t", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", restartHost, `cd ${ws.data.cwd} && exec zsh -l`], {
                   name: "xterm-256color",
                   cwd: process.cwd(),
                   env: { ...process.env, TERM: "xterm-256color" },

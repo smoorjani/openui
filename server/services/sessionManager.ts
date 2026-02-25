@@ -7,23 +7,36 @@ import type { Session } from "../types";
 import { loadBuffer } from "./persistence";
 
 const DEFAULT_PERMISSIONS = [
-  "WebFetch(domain:*.anthropic.com)",
-  "WebFetch(domain:code.claude.com)",
-  "WebFetch(domain:*.mozilla.org)",
-
-  "Bash(ls:*)",
-  "Bash(pwd:*)",
+  // Shell basics
+  "Bash(bash:*)",
+  "Bash(source:*)",
   "Bash(echo:*)",
+  "Bash(pwd:*)",
+  "Bash(cd:*)",
+  "Bash(pushd:*)",
+  "Bash(popd)",
+
+  // File operations
+  "Bash(ls:*)",
   "Bash(cat:*)",
-  "Bash(grep:*)",
-  "Bash(find:*)",
   "Bash(head:*)",
   "Bash(tail:*)",
-  "Bash(wc:*)",
+  "Bash(find:*)",
+  "Bash(grep:*)",
   "Bash(rg:*)",
+  "Bash(tree:*)",
   "Bash(sort:*)",
   "Bash(uniq:*)",
-  "Bash(cd:*)",
+  "Bash(cut:*)",
+  "Bash(wc:*)",
+  "Bash(jq:*)",
+  "Bash(sed:*)",
+  "Bash(mkdir:*)",
+  "Bash(rm:*)",
+  "Bash(mv:*)",
+  "Bash(chmod:*)",
+
+  // System info
   "Bash(ps:*)",
   "Bash(top:*)",
   "Bash(df:*)",
@@ -31,39 +44,144 @@ const DEFAULT_PERMISSIONS = [
   "Bash(which:*)",
   "Bash(whereis:*)",
   "Bash(whoami:*)",
-  "Bash(jq:*)",
+  "Bash(lsof:*)",
+  "Bash(pgrep:*)",
+  "Bash(xargs kill:*)",
 
-  "Bash(git status:*)",
-  "Bash(git log:*)",
-  "Bash(git diff:*)",
+  // Network & SSH
+  "Bash(curl:*)",
+  "Bash(ssh:*)",
+
+  // Python
+  "Bash(python:*)",
+  "Bash(python3:*)",
+  "Bash(.venv/bin/python:*)",
+  "Bash(conda activate:*)",
+  "Bash(uv:*)",
+  "Bash(pip install:*)",
+  "Bash(pip index:*)",
+  "Bash(pip show:*)",
+  "Bash(ruff check:*)",
+  "Bash(ruff format:*)",
+
+  // JavaScript / TypeScript
+  "Bash(npm run build:*)",
+  "Bash(npm create:*)",
+  "Bash(npm install)",
+  "Bash(npx tsc:*)",
+  "Bash(npx playwright test:*)",
+  "Bash(npx jest:*)",
+  "Bash(bunx tsc:*)",
+  "Bash(bun run:*)",
+  "Bash(bun -e:*)",
+  "Bash(yarn install:*)",
+  "Bash(yarn lint:*)",
+  "Bash(yarn test:*)",
+  "Bash(yarn tsc:*)",
+  "Bash(yarn type-check)",
+  "Bash(yarn prettier:check:*)",
+  "Bash(yarn prettier:fix:*)",
+  "Bash(yarn i18n:*)",
+  "Bash(yarn build:*)",
+
+  // Git
+  "Bash(git add:*)",
   "Bash(git branch:*)",
+  "Bash(git checkout:*)",
+  "Bash(git cherry-pick:*)",
+  "Bash(git clone:*)",
+  "Bash(git commit:*)",
+  "Bash(git diff:*)",
+  "Bash(git fetch:*)",
+  "Bash(git grep:*)",
+  "Bash(git log:*)",
+  "Bash(git ls-remote:*)",
+  "Bash(git merge-base:*)",
+  "Bash(git mv:*)",
+  "Bash(git pull:*)",
+  "Bash(git push:*)",
+  "Bash(git rebase:*)",
+  "Bash(git reset:*)",
+  "Bash(git restore:*)",
+  "Bash(git revert:*)",
+  "Bash(git rev-parse:*)",
+  "Bash(git rm:*)",
   "Bash(git show:*)",
+  "Bash(git stack:*)",
+  "Bash(git stash:*)",
+  "Bash(git status:*)",
+  "Bash(git tag:*)",
 
-  "Bash(gh pr view:*)",
-  "Bash(gh pr diff:*)",
+  // GitHub CLI
   "Bash(gh api:*)",
-  "Bash(gh repo view:*)",
   "Bash(gh issue list:*)",
   "Bash(gh issue view:*)",
+  "Bash(gh pr create:*)",
+  "Bash(gh pr diff:*)",
+  "Bash(gh pr list:*)",
+  "Bash(gh pr view:*)",
+  "Bash(gh repo view:*)",
+  "Bash(gh search:*)",
+  "Bash(gstk:*)",
 
+  // Kubernetes
   "Bash(kubectl describe:*)",
   "Bash(kubectl get:*)",
   "Bash(kubectl logs:*)",
   "Bash(kubectl version)",
 
+  // Bazel
   "Bash(bazel query:*)",
   "Bash(bazel build:*)",
   "Bash(bazel test:*)",
 
+  // Other tools
+  "Bash(docker info:*)",
+  "Bash(protoc:*)",
+  "Bash(sqlite3:*)",
+  "Bash(claude -p:*)",
+  "Bash(brew install:*)",
+  "Bash(brew upgrade:*)",
+  "Bash(brew unlink:*)",
+  "Bash(brew list:*)",
+  "Bash(xcode-select:*)",
+
+  // Read permissions
   "Read(//tmp/**)",
   "Read(~/.runtests/**)",
   "Read(~/.cache/bazel/**)",
   "Read(~/.cache/debug-copilot/prometheus/**)",
 
+  // WebSearch
+  "WebSearch",
+
+  // WebFetch
+  "WebFetch(domain:*.anthropic.com)",
+  "WebFetch(domain:code.claude.com)",
+  "WebFetch(domain:docs.claude.com)",
+  "WebFetch(domain:*.mozilla.org)",
+  "WebFetch(domain:mlflow.org)",
+  "WebFetch(domain:docs.databricks.com)",
+  "WebFetch(domain:www.databricks.com)",
+  "WebFetch(domain:databricks-sdk-py.readthedocs.io)",
+  "WebFetch(domain:github.com)",
+  "WebFetch(domain:raw.githubusercontent.com)",
+  "WebFetch(domain:docs.deepeval.com)",
+  "WebFetch(domain:deepeval.com)",
+  "WebFetch(domain:docs.ragas.io)",
+  "WebFetch(domain:docs.google.com)",
+  "WebFetch(domain:pypi.org)",
+  "WebFetch(domain:scholar.google.com)",
+  "WebFetch(domain:www.youtube.com)",
+  "WebFetch(domain:www.reddit.com)",
+
+  // MCP - GitHub
   "mcp__github__github_get_service_info",
   "mcp__github__github_get_api_info",
   "mcp__github__github_read_api_call",
+  "mcp__proxy__github__github_read_api_call",
 
+  // MCP - Databricks
   "mcp__databricks__execute_parameterized_sql",
   "mcp__databricks__check_statement_status",
   "mcp__databricks__cancel_statement",
@@ -72,41 +190,50 @@ const DEFAULT_PERMISSIONS = [
   "mcp__databricks__get_dbfs_destination",
   "mcp__databricks__databricks_jobs",
 
+  // MCP - Glean
   "mcp__glean__glean_get_service_info",
   "mcp__glean__glean_get_api_info",
   "mcp__glean__glean_read_api_call",
   "mcp__glean__list_entities",
   "mcp__glean__get_person",
 
+  // MCP - Jira
   "mcp__jira__jira_get_service_info",
   "mcp__jira__jira_get_api_info",
   "mcp__jira__jira_read_api_call",
 
+  // MCP - Confluence
   "mcp__confluence__get_confluence_page_content",
   "mcp__confluence__search_confluence_pages",
   "mcp__confluence__get_confluence_spaces",
   "mcp__confluence__get_page_children",
 
+  // MCP - DevPortal
   "mcp__devportal__devportal_get_service_info",
   "mcp__devportal__devportal_get_api_info",
   "mcp__devportal__devportal_read_api_call",
 
+  // MCP - PagerDuty
   "mcp__pagerduty__pagerduty_query",
 
+  // MCP - Debug Copilot
   "mcp__debug-copilot__get_investigation_details",
   "mcp__debug-copilot__query_prometheus_metrics",
   "mcp__debug-copilot__get_grafana_dashboard",
   "mcp__debug-copilot__get_dashboard_filter_values",
 
+  // MCP - Slack
   "mcp__slack__slack_get_service_info",
   "mcp__slack__slack_get_api_info",
   "mcp__slack__slack_read_api_call",
   "mcp__slack__slack_batch_read_api_call",
 
+  // MCP - Google
   "mcp__google__google_get_service_info",
   "mcp__google__google_get_api_info",
   "mcp__google__google_read_api_call",
 
+  // MCP - Testman
   "mcp__testman__list_investigations",
   "mcp__testman__get_investigation",
   "mcp__testman__get_investigation_tags",
@@ -116,6 +243,38 @@ const DEFAULT_PERMISSIONS = [
   "mcp__testman__get_relevant_investigations",
   "mcp__testman__list_issues",
   "mcp__testman__get_issue",
+
+  // MCP - Chrome DevTools
+  "mcp__chrome-devtools__click",
+  "mcp__chrome-devtools__evaluate_script",
+  "mcp__chrome-devtools__get_network_request",
+  "mcp__chrome-devtools__hover",
+  "mcp__chrome-devtools__list_network_requests",
+  "mcp__chrome-devtools__list_pages",
+  "mcp__chrome-devtools__navigate_page",
+  "mcp__chrome-devtools__new_page",
+  "mcp__chrome-devtools__press_key",
+  "mcp__chrome-devtools__take_screenshot",
+  "mcp__chrome-devtools__take_snapshot",
+  "mcp__chrome-devtools__wait_for",
+
+  // MCP - Playwright
+  "mcp__playwright__browser_click",
+  "mcp__playwright__browser_close",
+  "mcp__playwright__browser_console_messages",
+  "mcp__playwright__browser_evaluate",
+  "mcp__playwright__browser_hover",
+  "mcp__playwright__browser_navigate",
+  "mcp__playwright__browser_press_key",
+  "mcp__playwright__browser_snapshot",
+  "mcp__playwright__browser_take_screenshot",
+  "mcp__playwright__browser_wait_for",
+  "mcp__plugin_playwright_playwright__browser_click",
+  "mcp__plugin_playwright_playwright__browser_close",
+  "mcp__plugin_playwright_playwright__browser_navigate",
+  "mcp__plugin_playwright_playwright__browser_run_code",
+  "mcp__plugin_playwright_playwright__browser_snapshot",
+  "mcp__plugin_playwright_playwright__browser_take_screenshot",
 ];
 
 const QUIET = !!process.env.OPENUI_QUIET;
@@ -129,6 +288,10 @@ const REMOTE_HOSTS: Record<string, string> = {
 
 export function getRemoteHost(remote: string): string {
   return REMOTE_HOSTS[remote] || remote;
+}
+
+function sshArgs(host: string, remoteCommand: string): string[] {
+  return ["-t", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", host, remoteCommand];
 }
 
 function sshExec(remote: string, command: string): { exitCode: number; stdout: string; stderr: string } {
@@ -206,6 +369,51 @@ function setupPtyHandlers(session: Session, sessionId: string, ptyProcess: Retur
       if (client.readyState === 1) {
         client.send(JSON.stringify({ type: "output", data }));
       }
+    }
+  });
+
+  ptyProcess.onExit(() => {
+    if (!sessions.has(sessionId)) return;
+
+    session.pty = null;
+
+    if (session.remote) {
+      // Remote SSH died (likely network drop) — auto-reconnect
+      log(`\x1b[38;5;208m[pty-exit]\x1b[0m Remote SSH exited for ${sessionId}, attempting auto-reconnect in 3s...`);
+      session.status = "disconnected";
+      broadcastToSession(session, {
+        type: "status",
+        status: "disconnected",
+      });
+
+      setTimeout(async () => {
+        if (!sessions.has(sessionId) || session.pty) return;
+
+        log(`\x1b[38;5;82m[auto-reconnect]\x1b[0m Reconnecting ${sessionId}...`);
+        broadcastToSession(session, {
+          type: "output",
+          data: "\r\n\x1b[38;5;208m[openui] SSH disconnected. Reconnecting...\x1b[0m\r\n",
+        });
+
+        try {
+          const success = await resumeSession(sessionId);
+          if (success) {
+            log(`\x1b[38;5;82m[auto-reconnect]\x1b[0m Reconnected ${sessionId}`);
+          } else {
+            log(`\x1b[38;5;196m[auto-reconnect]\x1b[0m Failed to reconnect ${sessionId}`);
+          }
+        } catch (e) {
+          log(`\x1b[38;5;196m[auto-reconnect]\x1b[0m Error reconnecting ${sessionId}: ${e}`);
+        }
+      }, 3000);
+    } else {
+      // Local PTY exited — mark disconnected, user can manually resume
+      log(`\x1b[38;5;245m[pty-exit]\x1b[0m PTY exited for ${sessionId}`);
+      session.status = "disconnected";
+      broadcastToSession(session, {
+        type: "status",
+        status: "disconnected",
+      });
     }
   });
 }
@@ -643,7 +851,7 @@ async function createWorktreeAndStartAgent(params: {
   let ptyProcess;
   if (remote) {
     const host = getRemoteHost(remote);
-    ptyProcess = spawnPty("ssh", ["-t", host, `cd ${session.cwd} && exec zsh -l`], {
+    ptyProcess = spawnPty("ssh", sshArgs(host, `cd ${session.cwd} && exec zsh -l`), {
       name: "xterm-256color",
       cwd: process.cwd(),
       env: { ...process.env, TERM: "xterm-256color" },
@@ -983,7 +1191,7 @@ export function createSession(params: {
   let ptyProcess;
   if (remote) {
     const host = getRemoteHost(remote);
-    ptyProcess = spawnPty("ssh", ["-t", host, `cd ${workingDir} && exec zsh -l`], {
+    ptyProcess = spawnPty("ssh", sshArgs(host, `cd ${workingDir} && exec zsh -l`), {
       name: "xterm-256color",
       cwd: process.cwd(),
       env: {
@@ -1206,7 +1414,7 @@ export async function resumeSession(sessionId: string): Promise<boolean> {
   let ptyProcess;
   if (session.remote) {
     const host = getRemoteHost(session.remote);
-    ptyProcess = spawnPty("ssh", ["-t", host, `cd ${session.cwd} && exec zsh -l`], {
+    ptyProcess = spawnPty("ssh", sshArgs(host, `cd ${session.cwd} && exec zsh -l`), {
       name: "xterm-256color",
       cwd: process.cwd(),
       env: { ...process.env, TERM: "xterm-256color" },
@@ -1258,7 +1466,7 @@ export async function resumeSession(sessionId: string): Promise<boolean> {
   const spawnFreshPty = () => {
     if (session.remote) {
       const host = getRemoteHost(session.remote);
-      return spawnPty("ssh", ["-t", host, `cd ${session.cwd} && exec zsh -l`], {
+      return spawnPty("ssh", sshArgs(host, `cd ${session.cwd} && exec zsh -l`), {
         name: "xterm-256color",
         cwd: process.cwd(),
         env: { ...process.env, TERM: "xterm-256color" },
