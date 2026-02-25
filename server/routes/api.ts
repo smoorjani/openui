@@ -89,6 +89,9 @@ apiRoutes.get("/sessions", (c) => {
       notes: session.notes,
       isRestored: session.isRestored,
       remote: session.remote,
+      categoryId: session.categoryId,
+      sortOrder: session.sortOrder,
+      dueDate: session.dueDate,
     };
   });
   return c.json(sessionList);
@@ -209,6 +212,9 @@ apiRoutes.patch("/sessions/:sessionId", async (c) => {
   if (updates.customName !== undefined) session.customName = updates.customName;
   if (updates.customColor !== undefined) session.customColor = updates.customColor;
   if (updates.notes !== undefined) session.notes = updates.notes;
+  if (updates.categoryId !== undefined) session.categoryId = updates.categoryId;
+  if (updates.sortOrder !== undefined) session.sortOrder = updates.sortOrder;
+  if (updates.dueDate !== undefined) session.dueDate = updates.dueDate;
 
   saveState(sessions);
   return c.json({ success: true });

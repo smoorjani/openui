@@ -38,6 +38,10 @@ export interface Session {
   creationProgress?: string;
   // Remote execution (e.g. "arca" for SSH-based sessions)
   remote?: string;
+  // List view fields
+  categoryId?: string;
+  sortOrder?: number;
+  dueDate?: string;
 }
 
 export interface WorktreeRepo {
@@ -69,6 +73,9 @@ export interface PersistedNode {
   position: { x: number; y: number };
   claudeSessionId?: string;  // Claude Code's internal session ID for --resume
   remote?: string; // Remote host for SSH-based sessions
+  categoryId?: string;
+  sortOrder?: number;
+  dueDate?: string;
 }
 
 export interface PersistedCategory {

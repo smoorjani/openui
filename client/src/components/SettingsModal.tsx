@@ -1,7 +1,8 @@
 import { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, GitBranch, Plus, Trash2, Folder, ChevronRight } from "lucide-react";
+import { X, GitBranch, Plus, Trash2, Folder, ChevronRight, LayoutGrid, List } from "lucide-react";
+import { useStore } from "../stores/useStore";
 
 interface WorktreeRepo {
   name: string;
@@ -18,6 +19,7 @@ interface SettingsModalProps {
 }
 
 export function SettingsModal({ open, onClose }: SettingsModalProps) {
+  const { uiMode, setUiMode } = useStore();
   const [worktreeRepos, setWorktreeRepos] = useState<WorktreeRepo[]>([]);
   const [showAddRepo, setShowAddRepo] = useState(false);
   const [newRepoName, setNewRepoName] = useState("");
@@ -156,6 +158,42 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
 
               {/* Content */}
               <div className="p-5 space-y-6 max-h-[60vh] overflow-y-auto">
+                {/* UI Mode */}
+                <div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="w-6 h-6 rounded bg-violet-500/20 flex items-center justify-center">
+                      <LayoutGrid className="w-4 h-4 text-violet-400" />
+                    </div>
+                    <h3 className="text-sm font-medium text-white">UI Mode</h3>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => setUiMode("canvas")}
+                      className={`flex flex-col items-center gap-1.5 px-3 py-3 rounded-lg border transition-colors ${
+                        uiMode === "canvas"
+                          ? "border-violet-500 bg-violet-500/10 text-white"
+                          : "border-border bg-canvas text-zinc-400 hover:text-white hover:border-zinc-500"
+                      }`}
+                    >
+                      <LayoutGrid className="w-5 h-5" />
+                      <span className="text-xs font-medium">Canvas</span>
+                      <span className="text-[10px] text-zinc-500">Drag nodes freely</span>
+                    </button>
+                    <button
+                      onClick={() => setUiMode("list")}
+                      className={`flex flex-col items-center gap-1.5 px-3 py-3 rounded-lg border transition-colors ${
+                        uiMode === "list"
+                          ? "border-violet-500 bg-violet-500/10 text-white"
+                          : "border-border bg-canvas text-zinc-400 hover:text-white hover:border-zinc-500"
+                      }`}
+                    >
+                      <List className="w-5 h-5" />
+                      <span className="text-xs font-medium">List</span>
+                      <span className="text-[10px] text-zinc-500">Focused task view</span>
+                    </button>
+                  </div>
+                </div>
+
                 {/* Worktree Repositories */}
                 <div>
                   <div className="flex items-center justify-between mb-3">

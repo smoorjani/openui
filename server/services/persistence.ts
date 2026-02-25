@@ -58,6 +58,9 @@ export function saveState(sessions: Map<string, Session>) {
       position: session.position || existingNode?.position || { x: 0, y: 0 },
       claudeSessionId: session.claudeSessionId,
       remote: session.remote,
+      categoryId: session.categoryId,
+      sortOrder: session.sortOrder,
+      dueDate: session.dueDate,
     });
 
     saveBuffer(sessionId, session.outputBuffer);

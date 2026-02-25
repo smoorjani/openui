@@ -19,6 +19,7 @@ import { Sidebar } from "./components/Sidebar";
 import { NewSessionModal } from "./components/NewSessionModal";
 import { Header } from "./components/Header";
 import { CanvasControls } from "./components/CanvasControls";
+import { ListView } from "./components/ListView/ListView";
 
 const nodeTypes = {
   agent: AgentNode,
@@ -52,6 +53,7 @@ function AppContent() {
     newSessionForNodeId,
     setNewSessionForNodeId,
     sessions,
+    uiMode,
   } = useStore();
 
   const [nodes, setNodes, onNodesChange] = useNodesState(storeNodes);
@@ -188,6 +190,9 @@ function AppContent() {
             notes: session.notes,
             isRestored: session.isRestored,
             remote: session.remote,
+            categoryId: session.categoryId,
+            sortOrder: session.sortOrder,
+            dueDate: session.dueDate,
           });
 
           restoredNodes.push({
@@ -363,60 +368,64 @@ function AppContent() {
     <div className="w-screen h-screen bg-canvas overflow-hidden flex flex-col">
       <Header />
 
-      <div className="flex-1 relative">
-        <ReactFlow
-          nodes={nodes}
-          edges={[]}
-          onNodesChange={handleNodesChange}
-          onNodeClick={onNodeClick}
-          onPaneClick={onPaneClick}
-          nodeTypes={nodeTypes}
-          fitView
-          proOptions={{ hideAttribution: true }}
-          minZoom={0.3}
-          maxZoom={2}
-          nodesDraggable
-          nodesConnectable={false}
-          selectNodesOnDrag={false}
-          snapToGrid
-          snapGrid={[24, 24]}
-        >
-          <Background
-            variant={BackgroundVariant.Dots}
-            gap={24}
-            size={1}
-            color="#252525"
-          />
-          <Controls
-            showInteractive={false}
-            position="bottom-left"
-          />
-          <CanvasControls />
-        </ReactFlow>
+      {uiMode === "list" ? (
+        <ListView />
+      ) : (
+        <div className="flex-1 relative">
+          <ReactFlow
+            nodes={nodes}
+            edges={[]}
+            onNodesChange={handleNodesChange}
+            onNodeClick={onNodeClick}
+            onPaneClick={onPaneClick}
+            nodeTypes={nodeTypes}
+            fitView
+            proOptions={{ hideAttribution: true }}
+            minZoom={0.3}
+            maxZoom={2}
+            nodesDraggable
+            nodesConnectable={false}
+            selectNodesOnDrag={false}
+            snapToGrid
+            snapGrid={[24, 24]}
+          >
+            <Background
+              variant={BackgroundVariant.Dots}
+              gap={24}
+              size={1}
+              color="#252525"
+            />
+            <Controls
+              showInteractive={false}
+              position="bottom-left"
+            />
+            <CanvasControls />
+          </ReactFlow>
 
-        {/* Empty state */}
-        {isEmpty && (
-          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-            <div className="text-center pointer-events-auto">
-              <div className="w-16 h-16 rounded-2xl bg-surface border border-border flex items-center justify-center mx-auto mb-4">
-                <Plus className="w-8 h-8 text-zinc-600" />
+          {/* Empty state */}
+          {isEmpty && (
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+              <div className="text-center pointer-events-auto">
+                <div className="w-16 h-16 rounded-2xl bg-surface border border-border flex items-center justify-center mx-auto mb-4">
+                  <Plus className="w-8 h-8 text-zinc-600" />
+                </div>
+                <h2 className="text-lg font-medium text-zinc-300 mb-2">No agents yet</h2>
+                <p className="text-sm text-zinc-500 mb-4 max-w-xs">
+                  Spawn your first AI agent to get started
+                </p>
+                <button
+                  onClick={() => setAddAgentModalOpen(true)}
+                  className="px-4 py-2 rounded-lg bg-white text-canvas font-medium text-sm hover:bg-zinc-100 transition-colors"
+                >
+                  Create Agent
+                </button>
               </div>
-              <h2 className="text-lg font-medium text-zinc-300 mb-2">No agents yet</h2>
-              <p className="text-sm text-zinc-500 mb-4 max-w-xs">
-                Spawn your first AI agent to get started
-              </p>
-              <button
-                onClick={() => setAddAgentModalOpen(true)}
-                className="px-4 py-2 rounded-lg bg-white text-canvas font-medium text-sm hover:bg-zinc-100 transition-colors"
-              >
-                Create Agent
-              </button>
             </div>
-          </div>
-        )}
+          )}
 
-        <Sidebar />
-      </div>
+          <Sidebar />
+        </div>
+      )}
 
       <NewSessionModal
         open={addAgentModalOpen || newSessionModalOpen}

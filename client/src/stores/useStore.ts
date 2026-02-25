@@ -31,12 +31,33 @@ export interface AgentSession {
   currentTool?: string;
   remote?: string;
   creationProgress?: string;
+  categoryId?: string;
+  sortOrder?: number;
+  dueDate?: string;
+}
+
+export interface ListSection {
+  id: string;
+  label: string;
+  color: string;
+  collapsed?: boolean;
 }
 
 interface AppState {
   // Config
   launchCwd: string;
   setLaunchCwd: (cwd: string) => void;
+
+  // UI Mode
+  uiMode: "canvas" | "list";
+  setUiMode: (mode: "canvas" | "list") => void;
+
+  // List sections
+  listSections: ListSection[];
+  setListSections: (sections: ListSection[]) => void;
+  addListSection: (section: ListSection) => void;
+  updateListSection: (id: string, updates: Partial<ListSection>) => void;
+  removeListSection: (id: string) => void;
 
   // Agents
   agents: Agent[];
@@ -70,10 +91,63 @@ interface AppState {
   setWorktreeModalOpen: (open: boolean) => void;
 }
 
+const DEFAULT_LIST_SECTIONS: ListSection[] = [
+  { id: "todo", label: "TODO", color: "#22C55E" },
+  { id: "in-progress", label: "In Progress", color: "#3B82F6" },
+  { id: "in-review", label: "In Review", color: "#8B5CF6" },
+  { id: "on-hold", label: "On Hold", color: "#FBBF24" },
+];
+
+function loadListSections(): ListSection[] {
+  try {
+    const saved = localStorage.getItem("openui-list-sections");
+    if (saved) return JSON.parse(saved);
+  } catch {}
+  return DEFAULT_LIST_SECTIONS;
+}
+
+function saveListSections(sections: ListSection[]) {
+  localStorage.setItem("openui-list-sections", JSON.stringify(sections));
+}
+
 export const useStore = create<AppState>((set) => ({
   // Config
   launchCwd: "",
   setLaunchCwd: (cwd) => set({ launchCwd: cwd }),
+
+  // UI Mode
+  uiMode: (localStorage.getItem("openui-ui-mode") as "canvas" | "list") || "canvas",
+  setUiMode: (mode) => {
+    localStorage.setItem("openui-ui-mode", mode);
+    set({ uiMode: mode });
+  },
+
+  // List sections
+  listSections: loadListSections(),
+  setListSections: (sections) => {
+    saveListSections(sections);
+    set({ listSections: sections });
+  },
+  addListSection: (section) =>
+    set((state) => {
+      const sections = [...state.listSections, section];
+      saveListSections(sections);
+      return { listSections: sections };
+    }),
+  updateListSection: (id, updates) =>
+    set((state) => {
+      const sections = state.listSections.map((s) =>
+        s.id === id ? { ...s, ...updates } : s
+      );
+      saveListSections(sections);
+      return { listSections: sections };
+    }),
+  removeListSection: (id) =>
+    set((state) => {
+      const sections = state.listSections.filter((s) => s.id !== id);
+      saveListSections(sections);
+      return { listSections: sections };
+    }),
 
   // Agents
   agents: [],
