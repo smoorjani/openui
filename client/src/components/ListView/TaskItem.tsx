@@ -45,7 +45,6 @@ export function TaskItem({ nodeId, onSelect, isSelected, onDragStart }: TaskItem
 
   const status = statusConfig[session.status || "idle"];
   const displayName = session.customName || session.agentName;
-  const displayColor = session.customColor || session.color || "#888";
   const dueDateInfo = session.dueDate ? relativeDueDate(session.dueDate) : null;
 
   const handleContextMenu = (e: React.MouseEvent) => {
@@ -125,10 +124,6 @@ export function TaskItem({ nodeId, onSelect, isSelected, onDragStart }: TaskItem
         }`}
       >
         <GripVertical className="w-3 h-3 text-zinc-600 opacity-0 group-hover:opacity-100 flex-shrink-0 cursor-grab" />
-        <div
-          className="w-2 h-2 rounded-full flex-shrink-0"
-          style={{ backgroundColor: displayColor }}
-        />
         <div className="flex-1 min-w-0">
           {isRenaming ? (
             <input
@@ -146,36 +141,36 @@ export function TaskItem({ nodeId, onSelect, isSelected, onDragStart }: TaskItem
           ) : (
             <div className="text-sm text-zinc-200 truncate">{displayName}</div>
           )}
-          <div className="flex items-center gap-2 mt-0.5">
-            <span
-              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium"
-              style={{
-                backgroundColor: status.color + "20",
-                color: status.color,
-              }}
-            >
-              <div
-                className="w-1.5 h-1.5 rounded-full"
-                style={{ backgroundColor: status.color }}
-              />
-              {status.label}
+          {session.gitBranch && (
+            <span className="text-[10px] text-zinc-600 font-mono truncate block mt-0.5">
+              {session.gitBranch}
             </span>
-            {session.gitBranch && (
-              <span className="text-[10px] text-zinc-600 font-mono truncate">
-                {session.gitBranch}
-              </span>
-            )}
-          </div>
+          )}
         </div>
-        {dueDateInfo && (
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {dueDateInfo && (
+            <span
+              className={`text-[10px] ${
+                dueDateInfo.overdue ? "text-red-400" : "text-zinc-500"
+              }`}
+            >
+              {dueDateInfo.text}
+            </span>
+          )}
           <span
-            className={`text-[10px] flex-shrink-0 ${
-              dueDateInfo.overdue ? "text-red-400" : "text-zinc-500"
-            }`}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold"
+            style={{
+              backgroundColor: status.color + "20",
+              color: status.color,
+            }}
           >
-            {dueDateInfo.text}
+            <div
+              className="w-2 h-2 rounded-full"
+              style={{ backgroundColor: status.color }}
+            />
+            {status.label}
           </span>
-        )}
+        </div>
       </div>
 
       {/* Context menu */}
