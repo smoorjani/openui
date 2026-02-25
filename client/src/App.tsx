@@ -25,6 +25,15 @@ const nodeTypes = {
   category: CategoryNode,
 };
 
+const PRESET_CATEGORIES = [
+  { label: "TODO", color: "#22C55E", position: { x: 50, y: 80 } },
+  { label: "In Progress", color: "#3B82F6", position: { x: 370, y: 80 } },
+  { label: "In Review", color: "#8B5CF6", position: { x: 690, y: 80 } },
+  { label: "On Hold", color: "#FBBF24", position: { x: 1010, y: 80 } },
+];
+const PRESET_CAT_WIDTH = 280;
+const PRESET_CAT_HEIGHT = 400;
+
 function AppContent() {
   const {
     nodes: storeNodes,
@@ -111,7 +120,29 @@ function AppContent() {
       fetch("/api/state").then((res) => res.json()),
       fetch("/api/categories").then((res) => res.json()),
     ])
-      .then(([sessions, { nodes: savedNodes }, categories]) => {
+      .then(async ([sessions, { nodes: savedNodes }, categories]) => {
+        // Create preset categories if none exist
+        if (categories.length === 0) {
+          const created = [];
+          for (const preset of PRESET_CATEGORIES) {
+            const cat = {
+              id: `category-${Date.now()}-${preset.label.toLowerCase().replace(/\s+/g, "-")}`,
+              label: preset.label,
+              color: preset.color,
+              position: preset.position,
+              width: PRESET_CAT_WIDTH,
+              height: PRESET_CAT_HEIGHT,
+            };
+            await fetch("/api/categories", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(cat),
+            });
+            created.push(cat);
+          }
+          categories = created;
+        }
+
         const restoredNodes: any[] = [];
 
         // Restore categories first (they should be behind agents)
@@ -233,15 +264,68 @@ function AppContent() {
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, [saveAllPositions]);
 
+  // Track which nodes are being group-dragged with a category
+  const groupDragRef = useRef<Map<string, Set<string>>>(new Map());
+
   // Save positions when nodes are moved or resized
   const handleNodesChange = useCallback((changes: NodeChange[]) => {
-    onNodesChange(changes);
+    // Group drag: when a category is dragged, move contained agent nodes too
+    const extraChanges: NodeChange[] = [];
+    for (const change of changes) {
+      if (change.type !== "position" || !("position" in change) || !change.position) continue;
+      const node = nodes.find(n => n.id === change.id);
+      if (!node || node.type !== "category") continue;
 
-    const positionChanges = changes.filter(
+      const isDragging = "dragging" in change && change.dragging;
+      if (!isDragging) {
+        // Drag ended - clean up tracking
+        groupDragRef.current.delete(change.id);
+        continue;
+      }
+
+      const dx = change.position.x - node.position.x;
+      const dy = change.position.y - node.position.y;
+      if (dx === 0 && dy === 0) continue;
+
+      const catW = node.measured?.width || node.width || (typeof node.style?.width === "number" ? node.style.width : parseInt(node.style?.width as string) || 250);
+      const catH = node.measured?.height || node.height || (typeof node.style?.height === "number" ? node.style.height : parseInt(node.style?.height as string) || 200);
+
+      // On first drag frame, snapshot which agents are inside
+      if (!groupDragRef.current.has(change.id)) {
+        const contained = new Set<string>();
+        for (const agent of nodes) {
+          if (agent.type !== "agent") continue;
+          const cx = agent.position.x + 110; // ~half agent width
+          const cy = agent.position.y + 70;  // ~half agent height
+          if (cx >= node.position.x && cx <= node.position.x + catW &&
+              cy >= node.position.y && cy <= node.position.y + catH) {
+            contained.add(agent.id);
+          }
+        }
+        groupDragRef.current.set(change.id, contained);
+      }
+
+      const contained = groupDragRef.current.get(change.id)!;
+      for (const agentId of contained) {
+        const agent = nodes.find(n => n.id === agentId);
+        if (!agent) continue;
+        extraChanges.push({
+          type: "position",
+          id: agentId,
+          position: { x: agent.position.x + dx, y: agent.position.y + dy },
+          dragging: true,
+        } as NodeChange);
+      }
+    }
+
+    const allChanges = extraChanges.length > 0 ? [...changes, ...extraChanges] : changes;
+    onNodesChange(allChanges);
+
+    const positionChanges = allChanges.filter(
       (c) => c.type === "position" && "dragging" in c && c.dragging === false
     );
     // Check for dimension changes - resizing property might be true, false, or undefined
-    const dimensionChanges = changes.filter(
+    const dimensionChanges = allChanges.filter(
       (c) => c.type === "dimensions" && (!("resizing" in c) || c.resizing === false)
     );
 
@@ -250,7 +334,7 @@ function AppContent() {
         clearTimeout(positionUpdateTimeout.current);
       }
       // Compute updated nodes immediately to avoid sync delay issues
-      const updatedNodes = applyNodeChanges(changes, nodes);
+      const updatedNodes = applyNodeChanges(allChanges, nodes);
       positionUpdateTimeout.current = setTimeout(() => {
         saveAllPositions(updatedNodes);
       }, 300);

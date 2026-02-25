@@ -1,8 +1,9 @@
-import { MessageSquare, WifiOff, GitBranch, Folder, Wrench } from "lucide-react";
+import { MessageSquare, WifiOff, GitBranch, Folder, Wrench, Loader2 } from "lucide-react";
 import { AgentStatus } from "../../stores/useStore";
 
 // Status config with visual priority levels
 const statusConfig: Record<AgentStatus, { label: string; color: string; bgColor: string; isActive?: boolean; needsAttention?: boolean }> = {
+  creating: { label: "Creating", color: "#3B82F6", bgColor: "#3B82F615", isActive: true },
   running: { label: "Working", color: "#22C55E", bgColor: "#22C55E15", isActive: true },
   tool_calling: { label: "Working", color: "#22C55E", bgColor: "#22C55E15", isActive: true },
   waiting_input: { label: "Needs Input", color: "#F97316", bgColor: "#F9731620", needsAttention: true },
@@ -38,6 +39,7 @@ interface AgentNodeCardProps {
   originalCwd?: string;
   gitBranch?: string;
   remote?: string;
+  creationProgress?: string;
 }
 
 export function AgentNodeCard({
@@ -52,12 +54,14 @@ export function AgentNodeCard({
   originalCwd,
   gitBranch,
   remote,
+  creationProgress,
 }: AgentNodeCardProps) {
   // agentId is available for future use if needed
   void agentId;
   const statusInfo = statusConfig[status] || statusConfig.idle;
   const isActive = statusInfo.isActive;
   const isToolCalling = status === "tool_calling";
+  const isCreating = status === "creating";
   const needsAttention = statusInfo.needsAttention;
 
   // Extract directory name - use originalCwd (mother repo) if available, otherwise cwd
@@ -155,6 +159,13 @@ export function AgentNodeCard({
             <span className="text-[10px] text-zinc-400 flex items-center gap-1">
               <Wrench className="w-2.5 h-2.5" />
               {toolDisplay}
+            </span>
+          )}
+          {/* Show progress when creating worktree */}
+          {isCreating && creationProgress && (
+            <span className="text-[10px] text-blue-300 flex items-center gap-1 truncate max-w-[120px]">
+              <Loader2 className="w-2.5 h-2.5 animate-spin flex-shrink-0" />
+              {creationProgress}
             </span>
           )}
         </div>

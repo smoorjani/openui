@@ -1,7 +1,7 @@
 import type { IPty } from "bun-pty";
 import type { ServerWebSocket } from "bun";
 
-export type AgentStatus = "running" | "waiting_input" | "tool_calling" | "idle" | "disconnected" | "error";
+export type AgentStatus = "running" | "waiting_input" | "tool_calling" | "idle" | "disconnected" | "error" | "creating";
 
 export interface Session {
   pty: IPty | null;
@@ -34,6 +34,8 @@ export interface Session {
   currentTool?: string;
   // Last hook event received
   lastHookEvent?: string;
+  // Worktree creation progress message
+  creationProgress?: string;
   // Remote execution (e.g. "arca" for SSH-based sessions)
   remote?: string;
 }

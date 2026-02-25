@@ -32,9 +32,10 @@ export const AgentNode = ({ id, data }: NodeProps) => {
   // Use our store's selectedNodeId for selection state instead of React Flow's
   const isSelected = useStore((state) => state.selectedNodeId === id);
 
-  // Subscribe directly to status and currentTool as primitive values - this guarantees re-render on change
+  // Subscribe directly to status, currentTool, creationProgress as primitive values - this guarantees re-render on change
   const status: AgentStatus = useStore((state) => state.sessions.get(id)?.status) || "idle";
   const currentTool = useStore((state) => state.sessions.get(id)?.currentTool);
+  const creationProgress = useStore((state) => state.sessions.get(id)?.creationProgress);
 
   // Get the full session for other data
   const session = useStore((state) => state.sessions.get(id));
@@ -77,6 +78,7 @@ export const AgentNode = ({ id, data }: NodeProps) => {
           originalCwd={session?.originalCwd}
           gitBranch={session?.gitBranch}
           remote={session?.remote}
+          creationProgress={creationProgress}
         />
       </motion.div>
 

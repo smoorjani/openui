@@ -1,4 +1,4 @@
-import { spawnSync } from "bun";
+import { spawnSync, spawn as bunSpawn } from "bun";
 import { spawn as spawnPty } from "bun-pty";
 import { existsSync, mkdirSync, copyFileSync, readFileSync, writeFileSync } from "fs";
 import { join, basename } from "path";
@@ -142,6 +142,72 @@ function sshExec(remote: string, command: string): { exitCode: number; stdout: s
     stdout: result.stdout.toString(),
     stderr: result.stderr.toString(),
   };
+}
+
+// Async SSH execution (non-blocking)
+async function sshExecAsync(remote: string, command: string): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  const host = getRemoteHost(remote);
+  const proc = bunSpawn(["ssh", host, command], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+  const exitCode = await proc.exited;
+  return { exitCode, stdout, stderr };
+}
+
+// Async local command execution (non-blocking)
+async function execAsync(cmd: string[], cwd?: string): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  const proc = bunSpawn(cmd, {
+    stdout: "pipe",
+    stderr: "pipe",
+    cwd,
+  });
+  const [stdout, stderr] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+  const exitCode = await proc.exited;
+  return { exitCode, stdout, stderr };
+}
+
+// Broadcast a message to all connected WebSocket clients of a session
+function broadcastToSession(session: Session, message: Record<string, unknown>) {
+  const payload = JSON.stringify(message);
+  for (const client of session.clients) {
+    if (client.readyState === 1) {
+      client.send(payload);
+    }
+  }
+}
+
+// Set up PTY output handlers for a session
+function setupPtyHandlers(session: Session, sessionId: string, ptyProcess: ReturnType<typeof spawnPty>) {
+  const resetInterval = setInterval(() => {
+    if (!sessions.has(sessionId) || !session.pty) {
+      clearInterval(resetInterval);
+      return;
+    }
+    session.recentOutputSize = Math.max(0, session.recentOutputSize - 50);
+  }, 500);
+
+  ptyProcess.onData((data: string) => {
+    session.outputBuffer.push(data);
+    if (session.outputBuffer.length > MAX_BUFFER_SIZE) {
+      session.outputBuffer.shift();
+    }
+    session.lastOutputTime = Date.now();
+    session.recentOutputSize += data.length;
+
+    for (const client of session.clients) {
+      if (client.readyState === 1) {
+        client.send(JSON.stringify({ type: "output", data }));
+      }
+    }
+  });
 }
 
 // Get the OpenUI plugin directory path
@@ -512,6 +578,281 @@ export function createRemoteWorktree(params: {
 }
 
 
+// Async worktree creation with progress updates, then PTY spawn
+async function createWorktreeAndStartAgent(params: {
+  session: Session;
+  sessionId: string;
+  remote?: string;
+  originalCwd: string;
+  branchName: string;
+  baseBranch: string;
+  sparseCheckout?: boolean;
+  sparseCheckoutPaths?: string[];
+  agentId: string;
+  command: string;
+}): Promise<void> {
+  const { session, sessionId, remote, originalCwd, branchName, baseBranch,
+          sparseCheckout, sparseCheckoutPaths, agentId, command } = params;
+
+  const sendProgress = (step: string) => {
+    session.creationProgress = step;
+    broadcastToSession(session, {
+      type: "status",
+      status: "creating",
+      creationProgress: step,
+    });
+    log(`\x1b[38;5;141m[worktree-async]\x1b[0m ${sessionId}: ${step}`);
+  };
+
+  let success: boolean;
+
+  if (remote) {
+    success = await createRemoteWorktreeSteps({
+      remote, repoPath: originalCwd, branchName, baseBranch,
+      sparseCheckout, sparseCheckoutPaths, worktreePath: session.cwd,
+      onProgress: sendProgress,
+    });
+  } else {
+    success = await createLocalWorktreeSteps({
+      cwd: originalCwd, branchName, baseBranch,
+      sparseCheckout, sparseCheckoutPaths, worktreePath: session.cwd,
+      onProgress: sendProgress,
+    });
+  }
+
+  if (!success) {
+    session.status = "error";
+    session.creationProgress = "Worktree creation failed";
+    broadcastToSession(session, {
+      type: "status",
+      status: "error",
+      creationProgress: "Worktree creation failed",
+    });
+    return;
+  }
+
+  // Check session still exists (user may have deleted it)
+  if (!sessions.has(sessionId)) {
+    log(`\x1b[38;5;141m[worktree-async]\x1b[0m Session ${sessionId} was deleted during creation`);
+    return;
+  }
+
+  sendProgress("Starting agent...");
+
+  // Spawn PTY
+  let ptyProcess;
+  if (remote) {
+    const host = getRemoteHost(remote);
+    ptyProcess = spawnPty("ssh", ["-t", host, `cd ${session.cwd} && exec zsh -l`], {
+      name: "xterm-256color",
+      cwd: process.cwd(),
+      env: { ...process.env, TERM: "xterm-256color" },
+      rows: 30,
+      cols: 120,
+    });
+  } else {
+    ptyProcess = spawnPty("/bin/zsh", [], {
+      name: "xterm-256color",
+      cwd: session.cwd,
+      env: {
+        ...process.env,
+        TERM: "xterm-256color",
+        OPENUI_SESSION_ID: sessionId,
+      },
+      rows: 30,
+      cols: 120,
+    });
+  }
+
+  session.pty = ptyProcess;
+  session.status = "waiting_input";
+  session.creationProgress = undefined;
+
+  setupPtyHandlers(session, sessionId, ptyProcess);
+
+  // Run the agent command
+  const finalCommand = remote ? command : injectPluginDir(command, agentId);
+  log(`\x1b[38;5;82m[pty-write]\x1b[0m Writing command: ${finalCommand}`);
+  setTimeout(() => {
+    ptyProcess.write(`${finalCommand}\r`);
+  }, remote ? 1500 : 300);
+
+  broadcastToSession(session, {
+    type: "status",
+    status: "waiting_input",
+  });
+
+  log(`\x1b[38;5;141m[worktree-async]\x1b[0m Completed ${sessionId}`);
+}
+
+// Async remote worktree creation with step-by-step progress
+async function createRemoteWorktreeSteps(params: {
+  remote: string;
+  repoPath: string;
+  branchName: string;
+  baseBranch: string;
+  sparseCheckout?: boolean;
+  sparseCheckoutPaths?: string[];
+  worktreePath: string;
+  onProgress: (step: string) => void;
+}): Promise<boolean> {
+  const { remote, repoPath, branchName, baseBranch, sparseCheckout, sparseCheckoutPaths, worktreePath, onProgress } = params;
+
+  onProgress("Checking if worktree exists...");
+  const checkExist = await sshExecAsync(remote, `test -d ${worktreePath} && echo exists`);
+  if (checkExist.stdout.trim() === "exists") {
+    log(`\x1b[38;5;141m[worktree-remote-async]\x1b[0m Already exists: ${worktreePath}`);
+    return true;
+  }
+
+  const worktreesDir = worktreePath.replace(/\/[^/]+$/, "");
+  onProgress("Creating worktree directory...");
+  await sshExecAsync(remote, `mkdir -p ${worktreesDir}`);
+
+  onProgress("Fetching from origin...");
+  const fetchResult = await sshExecAsync(remote, `cd ${repoPath} && git fetch origin`);
+  if (fetchResult.exitCode !== 0) {
+    logError(`\x1b[38;5;196m[worktree-remote-async]\x1b[0m Fetch failed: ${fetchResult.stderr}`);
+  }
+
+  onProgress("Checking branch...");
+  const localBranch = await sshExecAsync(remote, `cd ${repoPath} && git rev-parse --verify ${branchName} 2>/dev/null`);
+  const remoteBranch = await sshExecAsync(remote, `cd ${repoPath} && git rev-parse --verify origin/${branchName} 2>/dev/null`);
+
+  const noCheckoutFlag = sparseCheckout ? " --no-checkout" : "";
+
+  onProgress("Creating worktree...");
+  let result;
+  if (localBranch.exitCode === 0) {
+    result = await sshExecAsync(remote, `cd ${repoPath} && git worktree add${noCheckoutFlag} ${worktreePath} ${branchName}`);
+  } else if (remoteBranch.exitCode === 0) {
+    result = await sshExecAsync(remote, `cd ${repoPath} && git worktree add${noCheckoutFlag} --track -b ${branchName} ${worktreePath} origin/${branchName}`);
+  } else {
+    result = await sshExecAsync(remote, `cd ${repoPath} && git worktree add${noCheckoutFlag} -b ${branchName} ${worktreePath} origin/${baseBranch}`);
+  }
+
+  if (result.exitCode !== 0) {
+    logError(`\x1b[38;5;196m[worktree-remote-async]\x1b[0m Failed to create worktree: ${result.stderr}`);
+    return false;
+  }
+
+  if (sparseCheckout) {
+    onProgress("Initializing sparse checkout...");
+    await sshExecAsync(remote, `cd ${worktreePath} && git sparse-checkout init --cone`);
+    if (sparseCheckoutPaths && sparseCheckoutPaths.length > 0) {
+      onProgress(`Setting sparse paths (${sparseCheckoutPaths.length} dirs)...`);
+      await sshExecAsync(remote, `cd ${worktreePath} && git sparse-checkout set ${sparseCheckoutPaths.join(" ")}`);
+    }
+    onProgress("Running checkout...");
+    await sshExecAsync(remote, `cd ${worktreePath} && git checkout`);
+  }
+
+  onProgress("Configuring permissions...");
+  const settingsJson = JSON.stringify({ permissions: { allow: DEFAULT_PERMISSIONS } }, null, 2);
+  const settingsBase64 = Buffer.from(settingsJson).toString("base64");
+  await sshExecAsync(remote, `mkdir -p ${worktreePath}/.claude && echo '${settingsBase64}' | base64 -d > ${worktreePath}/.claude/settings.local.json`);
+
+  return true;
+}
+
+// Async local worktree creation with step-by-step progress
+async function createLocalWorktreeSteps(params: {
+  cwd: string;
+  branchName: string;
+  baseBranch: string;
+  sparseCheckout?: boolean;
+  sparseCheckoutPaths?: string[];
+  worktreePath: string;
+  onProgress: (step: string) => void;
+}): Promise<boolean> {
+  const { cwd, branchName, baseBranch, sparseCheckout, sparseCheckoutPaths, worktreePath, onProgress } = params;
+  const gitRoot = getGitRoot(cwd);
+  if (!gitRoot) return false;
+
+  if (existsSync(worktreePath)) {
+    log(`\x1b[38;5;141m[worktree-async]\x1b[0m Already exists: ${worktreePath}`);
+    return true;
+  }
+
+  onProgress("Creating worktree directory...");
+  const worktreesDir = join(gitRoot, "..", `${basename(gitRoot)}-worktrees`);
+  if (!existsSync(worktreesDir)) {
+    mkdirSync(worktreesDir, { recursive: true });
+  }
+
+  onProgress("Fetching from remote...");
+  const hasUpstream = (await execAsync(["git", "remote", "get-url", "upstream"], gitRoot)).exitCode === 0;
+  if (hasUpstream) {
+    await execAsync(["git", "fetch", "upstream"], gitRoot);
+  }
+  await execAsync(["git", "fetch", "origin"], gitRoot);
+
+  const baseRemote = hasUpstream ? "upstream" : "origin";
+
+  onProgress("Checking branch...");
+  const localBranch = await execAsync(["git", "rev-parse", "--verify", branchName], gitRoot);
+  const remoteBranchOrigin = await execAsync(["git", "rev-parse", "--verify", `origin/${branchName}`], gitRoot);
+  const remoteBranchUpstream = hasUpstream
+    ? await execAsync(["git", "rev-parse", "--verify", `upstream/${branchName}`], gitRoot)
+    : null;
+
+  const noCheckoutArgs = sparseCheckout ? ["--no-checkout"] : [];
+
+  onProgress("Creating worktree...");
+  let result;
+  if (localBranch.exitCode === 0) {
+    result = await execAsync(["git", "worktree", "add", ...noCheckoutArgs, worktreePath, branchName], gitRoot);
+  } else if (remoteBranchUpstream?.exitCode === 0) {
+    result = await execAsync(["git", "worktree", "add", ...noCheckoutArgs, "--track", "-b", branchName, worktreePath, `upstream/${branchName}`], gitRoot);
+  } else if (remoteBranchOrigin.exitCode === 0) {
+    result = await execAsync(["git", "worktree", "add", ...noCheckoutArgs, "--track", "-b", branchName, worktreePath, `origin/${branchName}`], gitRoot);
+  } else {
+    result = await execAsync(["git", "worktree", "add", ...noCheckoutArgs, "-b", branchName, worktreePath, `${baseRemote}/${baseBranch}`], gitRoot);
+  }
+
+  if (result.exitCode !== 0) {
+    logError(`\x1b[38;5;196m[worktree-async]\x1b[0m Failed to create worktree: ${result.stderr}`);
+    return false;
+  }
+
+  if (sparseCheckout) {
+    onProgress("Initializing sparse checkout...");
+    await execAsync(["git", "sparse-checkout", "init", "--cone"], worktreePath);
+    if (sparseCheckoutPaths && sparseCheckoutPaths.length > 0) {
+      onProgress(`Setting sparse paths (${sparseCheckoutPaths.length} dirs)...`);
+      await execAsync(["git", "sparse-checkout", "set", ...sparseCheckoutPaths], worktreePath);
+    }
+    onProgress("Running checkout...");
+    await execAsync(["git", "checkout"], worktreePath);
+  }
+
+  // Create .claude/settings.local.json with merged permissions
+  onProgress("Configuring permissions...");
+  const parentSettingsPath = join(gitRoot, ".claude", "settings.local.json");
+  const worktreeClaudeDir = join(worktreePath, ".claude");
+  const worktreeSettingsPath = join(worktreeClaudeDir, "settings.local.json");
+
+  try {
+    if (!existsSync(worktreeClaudeDir)) {
+      mkdirSync(worktreeClaudeDir, { recursive: true });
+    }
+    let settings: { permissions?: { allow?: string[]; deny?: string[] }; [key: string]: unknown } = {};
+    if (existsSync(parentSettingsPath)) {
+      try {
+        settings = JSON.parse(readFileSync(parentSettingsPath, "utf-8"));
+      } catch {}
+    }
+    if (!settings.permissions) settings.permissions = {};
+    const existingAllow = settings.permissions.allow || [];
+    settings.permissions.allow = [...new Set([...existingAllow, ...DEFAULT_PERMISSIONS])];
+    writeFileSync(worktreeSettingsPath, JSON.stringify(settings, null, 2));
+  } catch (e) {
+    logError(`\x1b[38;5;141m[worktree-async]\x1b[0m Failed to create settings:`, e);
+  }
+
+  return true;
+}
+
 const MAX_BUFFER_SIZE = 1000;
 
 export const sessions = new Map<string, Session>();
@@ -555,44 +896,74 @@ export function createSession(params: {
   let gitBranch: string | null = null;
 
   if (createWorktreeFlag && branchName && baseBranch) {
+    // Compute expected worktree path immediately (deterministic)
     if (remote) {
-      // Create worktree on remote machine via SSH
-      const result = createRemoteWorktree({
-        remote,
-        repoPath: originalCwd,
-        branchName,
-        baseBranch,
-        sparseCheckout,
-        sparseCheckoutPaths,
-      });
-      if (result.success && result.worktreePath) {
-        workingDir = result.worktreePath;
-        worktreePath = result.worktreePath;
-        mainRepoPath = originalCwd;
-        gitBranch = branchName;
-        log(`\x1b[38;5;141m[session]\x1b[0m Using remote worktree: ${workingDir} on ${remote}`);
-      } else {
-        logError(`\x1b[38;5;141m[session]\x1b[0m Failed to create remote worktree:`, result.error);
-      }
+      const repoName = originalCwd.replace(/\/$/, "").split("/").pop() || "repo";
+      const parentDir = originalCwd.replace(/\/$/, "").replace(/\/[^/]+$/, "");
+      const dirName = branchName.replace(/\//g, "-");
+      workingDir = `${parentDir}/${repoName}-worktrees/${dirName}`;
     } else {
-      const result = createWorktree({
-        cwd: originalCwd,
-        branchName,
-        baseBranch,
-        sparseCheckout,
-        sparseCheckoutPaths,
-      });
-      if (result.success && result.worktreePath) {
-        workingDir = result.worktreePath;
-        worktreePath = result.worktreePath;
-        mainRepoPath = originalCwd;
-        gitBranch = branchName;
-        log(`\x1b[38;5;141m[session]\x1b[0m Using worktree: ${workingDir}, main repo: ${mainRepoPath}`);
-      } else {
-        logError(`\x1b[38;5;141m[session]\x1b[0m Failed to create worktree:`, result.error);
+      const gitRoot = getGitRoot(originalCwd);
+      if (gitRoot) {
+        const repoName = basename(gitRoot);
+        const dirName = branchName.replace(/\//g, "-");
+        workingDir = join(gitRoot, "..", `${repoName}-worktrees`, dirName);
       }
     }
+
+    worktreePath = workingDir;
+    mainRepoPath = originalCwd;
+    gitBranch = branchName;
+
+    // Create session with "creating" status and NO PTY - worktree creation is async
+    const now = Date.now();
+    const session: Session = {
+      pty: null,
+      agentId,
+      agentName,
+      command,
+      cwd: workingDir,
+      originalCwd: mainRepoPath,
+      gitBranch: branchName,
+      worktreePath,
+      createdAt: new Date().toISOString(),
+      clients: new Set(),
+      outputBuffer: [],
+      status: "creating",
+      creationProgress: "Initializing...",
+      lastOutputTime: now,
+      lastInputTime: 0,
+      recentOutputSize: 0,
+      customName,
+      customColor,
+      nodeId,
+      isRestored: false,
+      remote,
+    };
+
+    sessions.set(sessionId, session);
+
+    // Kick off async worktree creation + agent start
+    createWorktreeAndStartAgent({
+      session, sessionId, remote, originalCwd,
+      branchName, baseBranch, sparseCheckout, sparseCheckoutPaths,
+      agentId, command,
+    }).catch(err => {
+      logError(`\x1b[38;5;196m[worktree-async]\x1b[0m Failed for ${sessionId}:`, err);
+      session.status = "error";
+      session.creationProgress = `Failed: ${err.message || err}`;
+      broadcastToSession(session, {
+        type: "status",
+        status: "error",
+        creationProgress: session.creationProgress,
+      });
+    });
+
+    log(`\x1b[38;5;141m[session]\x1b[0m Created ${sessionId} (async worktree) for ${agentName}${remote ? ` on ${remote}` : ""}`);
+    return { session, cwd: workingDir, gitBranch: branchName };
   }
+
+  // --- Non-worktree path: spawn PTY immediately ---
 
   // For local sessions, detect the main repo from worktree
   if (!remote && !mainRepoPath) {
@@ -662,32 +1033,7 @@ export function createSession(params: {
   };
 
   sessions.set(sessionId, session);
-
-  // Output decay
-  const resetInterval = setInterval(() => {
-    if (!sessions.has(sessionId) || !session.pty) {
-      clearInterval(resetInterval);
-      return;
-    }
-    session.recentOutputSize = Math.max(0, session.recentOutputSize - 50);
-  }, 500);
-
-  // PTY output handler
-  ptyProcess.onData((data: string) => {
-    session.outputBuffer.push(data);
-    if (session.outputBuffer.length > MAX_BUFFER_SIZE) {
-      session.outputBuffer.shift();
-    }
-
-    session.lastOutputTime = Date.now();
-    session.recentOutputSize += data.length;
-
-    for (const client of session.clients) {
-      if (client.readyState === 1) {
-        client.send(JSON.stringify({ type: "output", data }));
-      }
-    }
-  });
+  setupPtyHandlers(session, sessionId, ptyProcess);
 
   // Run the command (skip plugin injection for remote - plugin is local only)
   const finalCommand = remote ? command : injectPluginDir(command, agentId);

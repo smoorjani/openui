@@ -13,6 +13,7 @@ import {
   Home,
   ArrowUp,
   Github,
+  Clock,
 } from "lucide-react";
 import { useReactFlow } from "@xyflow/react";
 import { useStore, Agent, AgentSession } from "../stores/useStore";
@@ -164,8 +165,27 @@ export function NewSessionModal({
   const [githubError, setGithubError] = useState<string | null>(null);
   const [selectedGithubIssue, setSelectedGithubIssue] = useState<GitHubIssue | null>(null);
 
+  // Recent directories
+  const [recentDirs, setRecentDirs] = useState<string[]>([]);
+
   // Track if we've initialized for this modal open
   const [initialized, setInitialized] = useState(false);
+
+  const DEFAULT_CWD = "/Users/samraj.moorjani";
+  const MAX_RECENT_DIRS = 5;
+
+  const loadRecentDirs = (): string[] => {
+    try {
+      return JSON.parse(localStorage.getItem("openui-recent-dirs") || "[]");
+    } catch { return []; }
+  };
+
+  const saveRecentDir = (dir: string) => {
+    if (!dir) return;
+    const recent = loadRecentDirs().filter(d => d !== dir);
+    recent.unshift(dir);
+    localStorage.setItem("openui-recent-dirs", JSON.stringify(recent.slice(0, MAX_RECENT_DIRS)));
+  };
 
   // Reset form when modal opens (only once per open)
   useEffect(() => {
@@ -183,11 +203,12 @@ export function NewSessionModal({
         setCount(1);
       } else {
         setSelectedAgent(claudeAgent || null);
-        setCwd("");
+        setCwd(DEFAULT_CWD);
         setCustomName("");
         setCommandArgs("");
         setCount(1);
       }
+      setRecentDirs(loadRecentDirs());
       setActiveTab("blank");
       setSelectedGithubIssue(null);
       setGithubIssues([]);
@@ -278,6 +299,7 @@ export function NewSessionModal({
 
     try {
       const workingDir = cwd || (isReplacing ? existingSession?.cwd : null) || launchCwd;
+      saveRecentDir(workingDir);
       const fullCommand = selectedAgent.command
         ? (commandArgs ? `${selectedAgent.command} ${commandArgs}` : selectedAgent.command)
         : commandArgs;
@@ -668,6 +690,24 @@ export function NewSessionModal({
                       <FolderOpen className="w-3 h-3" />
                       Working Directory
                     </label>
+                    {recentDirs.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {recentDirs.map((dir) => (
+                          <button
+                            key={dir}
+                            onClick={() => setCwd(dir)}
+                            className={`flex items-center gap-1 px-2 py-1 rounded text-[11px] font-mono transition-colors ${
+                              cwd === dir
+                                ? "bg-white/10 text-white border border-zinc-500"
+                                : "bg-canvas border border-border text-zinc-400 hover:text-white hover:border-zinc-500"
+                            }`}
+                          >
+                            <Clock className="w-2.5 h-2.5 flex-shrink-0" />
+                            {dir.split("/").slice(-2).join("/")}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                     <div className="flex gap-2">
                       <input
                         type="text"

@@ -17,14 +17,18 @@ import {
   GitBranch,
   MessageSquare,
   Terminal as TerminalIcon,
+  Columns2,
+  Rows2,
 } from "lucide-react";
 import { useStore, AgentStatus } from "../stores/useStore";
 import { Terminal } from "./Terminal";
 import { ShellTerminal } from "./ShellTerminal";
 
 type TerminalTab = "claude" | "shell";
+type LayoutMode = "tabbed" | "split";
 
 const statusConfig: Record<AgentStatus, { label: string; color: string }> = {
+  creating: { label: "Creating worktree", color: "#3B82F6" },
   running: { label: "Running", color: "#22C55E" },
   waiting_input: { label: "Waiting for input", color: "#F97316" },
   tool_calling: { label: "Tool Calling", color: "#8B5CF6" },
@@ -72,6 +76,9 @@ export function Sidebar() {
   const [editIcon, setEditIcon] = useState("");
   const [terminalKey, setTerminalKey] = useState(0);
   const [activeTab, setActiveTab] = useState<TerminalTab>("claude");
+  const [layoutMode, setLayoutMode] = useState<LayoutMode>(() => {
+    return (localStorage.getItem("openui-layout-mode") as LayoutMode) || "tabbed";
+  });
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const saved = localStorage.getItem("openui-sidebar-width");
     return saved ? parseInt(saved, 10) : 512;
@@ -238,8 +245,21 @@ export function Sidebar() {
             </div>
           )}
 
+          {/* Creating worktree banner */}
+          {session?.status === "creating" && (
+            <div className="flex-shrink-0 px-4 py-3 bg-blue-500/10 border-b border-blue-500/20">
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+                <div>
+                  <p className="text-sm text-blue-400 font-medium">Creating Worktree</p>
+                  <p className="text-xs text-blue-400/70 mt-0.5">{session.creationProgress || "Initializing..."}</p>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Session Management Controls */}
-          {!isDisconnected && !isEditing && (
+          {!isDisconnected && !isEditing && session?.status !== "creating" && (
             <div className="flex-shrink-0 px-4 py-2 border-b border-border">
               <button
                 onClick={handleNewSession}
@@ -390,57 +410,103 @@ export function Sidebar() {
           <div className="flex-1 flex flex-col min-h-0">
             <div className="flex-shrink-0 px-4 py-2 border-b border-border flex items-center justify-between">
               <div className="flex items-center gap-1">
-                <button
-                  onClick={() => setActiveTab("claude")}
-                  className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs transition-colors ${
-                    activeTab === "claude"
-                      ? "bg-surface-active text-white"
-                      : "text-zinc-500 hover:text-zinc-300"
-                  }`}
-                >
-                  <MessageSquare className="w-3 h-3" />
-                  Claude Log
-                </button>
-                <button
-                  onClick={() => setActiveTab("shell")}
-                  className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs transition-colors ${
-                    activeTab === "shell"
-                      ? "bg-surface-active text-white"
-                      : "text-zinc-500 hover:text-zinc-300"
-                  }`}
-                >
-                  <TerminalIcon className="w-3 h-3" />
-                  Shell
-                </button>
+                {layoutMode === "tabbed" ? (
+                  <>
+                    <button
+                      onClick={() => setActiveTab("claude")}
+                      className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs transition-colors ${
+                        activeTab === "claude"
+                          ? "bg-surface-active text-white"
+                          : "text-zinc-500 hover:text-zinc-300"
+                      }`}
+                    >
+                      <MessageSquare className="w-3 h-3" />
+                      Claude Log
+                    </button>
+                    <button
+                      onClick={() => setActiveTab("shell")}
+                      className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs transition-colors ${
+                        activeTab === "shell"
+                          ? "bg-surface-active text-white"
+                          : "text-zinc-500 hover:text-zinc-300"
+                      }`}
+                    >
+                      <TerminalIcon className="w-3 h-3" />
+                      Shell
+                    </button>
+                  </>
+                ) : (
+                  <span className="text-xs text-zinc-500">Claude Log + Shell</span>
+                )}
               </div>
-              <div className="flex items-center gap-1">
-                <div className="w-2.5 h-2.5 rounded-full bg-[#FF5F56]" />
-                <div className="w-2.5 h-2.5 rounded-full bg-[#FFBD2E]" />
-                <div className="w-2.5 h-2.5 rounded-full bg-[#27CA40]" />
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    const next = layoutMode === "tabbed" ? "split" : "tabbed";
+                    setLayoutMode(next);
+                    localStorage.setItem("openui-layout-mode", next);
+                  }}
+                  className="p-1 rounded text-zinc-500 hover:text-white hover:bg-surface-active transition-colors"
+                  title={layoutMode === "tabbed" ? "Split view" : "Tabbed view"}
+                >
+                  {layoutMode === "tabbed" ? (
+                    <Columns2 className="w-3.5 h-3.5" />
+                  ) : (
+                    <Rows2 className="w-3.5 h-3.5" />
+                  )}
+                </button>
+                <div className="flex items-center gap-1">
+                  <div className="w-2.5 h-2.5 rounded-full bg-[#FF5F56]" />
+                  <div className="w-2.5 h-2.5 rounded-full bg-[#FFBD2E]" />
+                  <div className="w-2.5 h-2.5 rounded-full bg-[#27CA40]" />
+                </div>
               </div>
             </div>
 
-            <div className="flex-1 min-h-0 bg-[#0d0d0d] relative">
-              {/* Render both terminals but only show active one */}
-              <div className={`absolute inset-0 ${activeTab === "claude" ? "" : "invisible"}`}>
-                <Terminal
-                  key={`${session.sessionId}-${terminalKey}`}
-                  sessionId={session.sessionId}
-                  color={displayColor}
-                  nodeId={selectedNodeId!}
-                />
+            {layoutMode === "tabbed" ? (
+              <div className="flex-1 min-h-0 bg-[#0d0d0d] relative">
+                <div className={`absolute inset-0 ${activeTab === "claude" ? "" : "invisible"}`}>
+                  <Terminal
+                    key={`${session.sessionId}-${terminalKey}`}
+                    sessionId={session.sessionId}
+                    color={displayColor}
+                    nodeId={selectedNodeId!}
+                    isActive={activeTab === "claude"}
+                  />
+                </div>
+                <div className={`absolute inset-0 ${activeTab === "shell" ? "" : "invisible"}`}>
+                  <ShellTerminal
+                    key={`shell-${session.sessionId}`}
+                    sessionId={session.sessionId}
+                    cwd={session.cwd}
+                    color={displayColor}
+                    remote={session.remote}
+                  />
+                </div>
               </div>
-              {/* Shell terminal recreates when session changes */}
-              <div className={`absolute inset-0 ${activeTab === "shell" ? "" : "invisible"}`}>
-                <ShellTerminal
-                  key={`shell-${session.sessionId}`}
-                  sessionId={session.sessionId}
-                  cwd={session.cwd}
-                  color={displayColor}
-                  remote={session.remote}
-                />
+            ) : (
+              <div className="flex-1 min-h-0 bg-[#0d0d0d] flex flex-row">
+                <div className="flex-1 min-w-0 min-h-0">
+                  <Terminal
+                    key={`${session.sessionId}-${terminalKey}`}
+                    sessionId={session.sessionId}
+                    color={displayColor}
+                    nodeId={selectedNodeId!}
+                    isActive
+                  />
+                </div>
+                <div className="w-px bg-zinc-700 flex-shrink-0" />
+                <div className="flex-1 min-w-0 min-h-0">
+                  <ShellTerminal
+                    key={`shell-${session.sessionId}`}
+                    sessionId={session.sessionId}
+                    cwd={session.cwd}
+                    color={displayColor}
+                    remote={session.remote}
+                  />
+                </div>
               </div>
-            </div>
+            )}
 
           </div>
 

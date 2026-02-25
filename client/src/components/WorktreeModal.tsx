@@ -104,7 +104,8 @@ export function WorktreeModal({ open, onClose }: WorktreeModalProps) {
         cwd: data.cwd || selectedRepo.path,
         gitBranch: data.gitBranch || branchName.trim(),
         originalCwd: selectedRepo.path,
-        status: "running",
+        status: "creating",
+        creationProgress: "Initializing...",
         remote: selectedRepo.remote,
       });
 

@@ -9,9 +9,10 @@ interface TerminalProps {
   sessionId: string;
   color: string;
   nodeId: string;
+  isActive?: boolean;
 }
 
-export function Terminal({ sessionId, color, nodeId }: TerminalProps) {
+export function Terminal({ sessionId, color, nodeId, isActive = true }: TerminalProps) {
   const updateSession = useStore((state) => state.updateSession);
   const terminalRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<XTerm | null>(null);
@@ -74,6 +75,7 @@ export function Terminal({ sessionId, color, nodeId }: TerminalProps) {
     term.loadAddon(webLinksAddon);
 
     term.open(terminalRef.current);
+    setTimeout(() => term.focus(), 100);
 
     xtermRef.current = term;
     fitAddonRef.current = fitAddon;
@@ -132,6 +134,7 @@ export function Terminal({ sessionId, color, nodeId }: TerminalProps) {
               status: msg.status as AgentStatus,
               isRestored: msg.isRestored,
               currentTool: msg.currentTool,
+              creationProgress: msg.creationProgress,
             });
           }
         } catch (e) {
@@ -211,6 +214,14 @@ export function Terminal({ sessionId, color, nodeId }: TerminalProps) {
       term.dispose();
     };
   }, [sessionId, color, nodeId, updateSession]);
+
+  // Refocus terminal when it becomes the active tab
+  useEffect(() => {
+    if (isActive && xtermRef.current) {
+      xtermRef.current.focus();
+      fitAddonRef.current?.fit();
+    }
+  }, [isActive]);
 
   return (
     <div

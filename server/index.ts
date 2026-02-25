@@ -131,7 +131,8 @@ Bun.serve<WebSocketData>({
       ws.send(JSON.stringify({
         type: "status",
         status: session.status,
-        isRestored: session.isRestored
+        isRestored: session.isRestored,
+        creationProgress: session.creationProgress,
       }));
     },
     message(ws, message) {
