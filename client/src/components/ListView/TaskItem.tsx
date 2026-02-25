@@ -147,13 +147,19 @@ export function TaskItem({ nodeId, onSelect, isSelected, onDragStart }: TaskItem
             <div className="text-sm text-zinc-200 truncate">{displayName}</div>
           )}
           <div className="flex items-center gap-2 mt-0.5">
-            <div className="flex items-center gap-1">
+            <span
+              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium"
+              style={{
+                backgroundColor: status.color + "20",
+                color: status.color,
+              }}
+            >
               <div
                 className="w-1.5 h-1.5 rounded-full"
                 style={{ backgroundColor: status.color }}
               />
-              <span className="text-[10px] text-zinc-500">{status.label}</span>
-            </div>
+              {status.label}
+            </span>
             {session.gitBranch && (
               <span className="text-[10px] text-zinc-600 font-mono truncate">
                 {session.gitBranch}
