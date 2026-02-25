@@ -1377,6 +1377,9 @@ export function restoreSessions() {
       isRestored: true,
       claudeSessionId: node.claudeSessionId,
       remote: node.remote,
+      categoryId: node.categoryId,
+      sortOrder: node.sortOrder,
+      dueDate: node.dueDate,
     };
 
     sessions.set(node.sessionId, session);
@@ -1458,6 +1461,11 @@ export async function resumeSession(sessionId: string): Promise<boolean> {
   if (hasSessionId) {
     finalCommand = finalCommand.replace("isaac", `isaac --resume ${session.claudeSessionId}`);
     log(`\x1b[38;5;141m[resume]\x1b[0m Attempting resume with session: ${session.claudeSessionId}`);
+  } else if (session.remote) {
+    // Remote sessions don't have plugin injection, so claudeSessionId is never captured.
+    // Use --resume without an ID to resume the most recent session in the cwd.
+    finalCommand = "isaac --resume";
+    log(`\x1b[38;5;141m[resume]\x1b[0m Remote resume (no session ID) for ${sessionId}`);
   }
 
   // Retry logic for "No conversation found"
