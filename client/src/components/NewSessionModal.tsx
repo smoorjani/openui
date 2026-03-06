@@ -165,6 +165,10 @@ export function NewSessionModal({
   const [githubError, setGithubError] = useState<string | null>(null);
   const [selectedGithubIssue, setSelectedGithubIssue] = useState<GitHubIssue | null>(null);
 
+  // Remote host state
+  const [remoteHosts, setRemoteHosts] = useState<string[]>([]);
+  const [remote, setRemote] = useState<string>("");
+
   // Recent directories
   const [recentDirs, setRecentDirs] = useState<string[]>([]);
 
@@ -208,12 +212,14 @@ export function NewSessionModal({
         setCommandArgs("");
         setCount(1);
       }
+      setRemote("");
       setRecentDirs(loadRecentDirs());
       setActiveTab("blank");
       setSelectedGithubIssue(null);
       setGithubIssues([]);
       setGithubError(null);
       setInitialized(true);
+      fetch("/api/remotes").then(r => r.json()).then(setRemoteHosts).catch(() => {});
     } else if (!open) {
       setInitialized(false);
     }
@@ -320,6 +326,7 @@ export function NewSessionModal({
             nodeId: existingNodeId,
             customName: customName || existingSession.customName,
             customColor: existingSession.customColor,
+            ...(remote && { remote }),
             ...(selectedGithubIssue && {
               branchName,
               baseBranch,
@@ -339,6 +346,7 @@ export function NewSessionModal({
             status: "idle",
             isRestored: false,
             gitBranch: gitBranch || branchName || undefined,
+            remote: remote || undefined,
           });
         }
       } else {
@@ -372,6 +380,7 @@ export function NewSessionModal({
               cwd: workingDir,
               nodeId,
               customName: count > 1 ? agentName : customName || undefined,
+              ...(remote && { remote }),
               ...(i === 0 && selectedGithubIssue && {
                 branchName,
                 baseBranch,
@@ -409,6 +418,7 @@ export function NewSessionModal({
             gitBranch: gitBranch || branchName || undefined,
             status: "idle",
             customName: count > 1 ? agentName : customName || undefined,
+            remote: remote || undefined,
           });
         }
       }
@@ -683,6 +693,38 @@ export function NewSessionModal({
                       </p>
                     )}
                   </div>
+
+                  {/* Run on (local vs remote) */}
+                  {remoteHosts.length > 0 && (
+                    <div className="space-y-2">
+                      <label className="text-xs text-zinc-500">Run on</label>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => setRemote("")}
+                          className={`flex-1 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                            !remote
+                              ? "bg-white text-canvas"
+                              : "bg-canvas border border-border text-zinc-400 hover:text-white hover:border-zinc-500"
+                          }`}
+                        >
+                          Local
+                        </button>
+                        {remoteHosts.map((host) => (
+                          <button
+                            key={host}
+                            onClick={() => setRemote(host)}
+                            className={`flex-1 px-3 py-1.5 rounded-md text-sm font-medium transition-colors capitalize ${
+                              remote === host
+                                ? "bg-white text-canvas"
+                                : "bg-canvas border border-border text-zinc-400 hover:text-white hover:border-zinc-500"
+                            }`}
+                          >
+                            {host}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
                   {/* Working directory */}
                   <div className="space-y-2">

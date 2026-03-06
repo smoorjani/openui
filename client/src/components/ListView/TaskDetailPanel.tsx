@@ -89,6 +89,13 @@ export function TaskDetailPanel({ nodeId, onClose }: TaskDetailPanelProps) {
             <span className="text-[10px] text-zinc-500">{statusInfo.label}</span>
           </div>
           <button
+            onClick={handleResume}
+            className="w-6 h-6 rounded flex items-center justify-center text-zinc-500 hover:text-green-400 hover:bg-green-500/10 transition-colors"
+            title="Reconnect / Resume session"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+          </button>
+          <button
             onClick={onClose}
             className="w-6 h-6 rounded flex items-center justify-center text-zinc-500 hover:text-white hover:bg-surface-active transition-colors"
           >
@@ -105,7 +112,16 @@ export function TaskDetailPanel({ nodeId, onClose }: TaskDetailPanelProps) {
               <p className="text-sm text-red-400 font-medium">
                 {session.status === "error" ? "Session Error" : "Session Disconnected"}
               </p>
-              <p className="text-xs text-red-400/70 mt-0.5">Resume to continue or start a new session.</p>
+              {session.sshError ? (
+                <p className="text-xs text-red-400/70 mt-0.5 font-mono">
+                  {session.sshError}
+                  {session.reconnectAttempt && session.maxReconnectAttempts
+                    ? ` (attempt ${session.reconnectAttempt}/${session.maxReconnectAttempts})`
+                    : ""}
+                </p>
+              ) : (
+                <p className="text-xs text-red-400/70 mt-0.5">Resume to continue or start a new session.</p>
+              )}
             </div>
             <div className="flex gap-2">
               <button

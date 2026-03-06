@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Agent } from "../types";
-import { sessions, createSession, deleteSession, resumeSession, injectPluginDir, getRemoteHost } from "../services/sessionManager";
+import { sessions, createSession, deleteSession, resumeSession, injectPluginDir, getRemoteHost, REMOTE_HOSTS } from "../services/sessionManager";
 import { loadState, saveState, savePositions, getDataDir } from "../services/persistence";
 import {
   loadWorktreeConfig,
@@ -69,6 +69,10 @@ apiRoutes.get("/agents", (c) => {
     },
   ];
   return c.json(agents);
+});
+
+apiRoutes.get("/remotes", (c) => {
+  return c.json(Object.keys(REMOTE_HOSTS));
 });
 
 apiRoutes.get("/sessions", (c) => {
@@ -191,10 +195,15 @@ apiRoutes.post("/sessions/:sessionId/restart", async (c) => {
   if (!session) return c.json({ error: "Session not found" }, 404);
 
   // Kill existing PTY if present (e.g. from failed auto-resume)
+  // Null first so onExit guard sees a different PTY and skips auto-reconnect
   if (session.pty) {
-    try { session.pty.kill(); } catch {}
+    const oldPty = session.pty;
     session.pty = null;
+    try { oldPty.kill(); } catch {}
   }
+
+  // Reset reconnect counter — manual retry should get fresh attempts
+  session.reconnectAttempts = 0;
 
   const success = await resumeSession(sessionId);
   if (!success) return c.json({ error: "Failed to resume session" }, 500);

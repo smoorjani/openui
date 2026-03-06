@@ -99,15 +99,12 @@ export function TaskItem({ nodeId, onSelect, isSelected, onDragStart }: TaskItem
     setIsRenaming(false);
   };
 
-  const handleDelete = async () => {
+  const handleDelete = () => {
     closeContextMenu();
-    try {
-      await fetch(`/api/sessions/${session.sessionId}`, { method: "DELETE" });
-      useStore.getState().removeSession(nodeId);
-      useStore.getState().removeNode(nodeId);
-    } catch (e) {
-      console.error("Failed to delete session:", e);
-    }
+    // Remove from UI immediately, then tell server to clean up
+    useStore.getState().removeSession(nodeId);
+    useStore.getState().removeNode(nodeId);
+    fetch(`/api/sessions/${session.sessionId}`, { method: "DELETE" }).catch(console.error);
   };
 
   return (

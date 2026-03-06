@@ -282,7 +282,7 @@ const log = QUIET ? () => {} : console.log.bind(console);
 const logError = QUIET ? () => {} : console.error.bind(console);
 
 // Remote host mappings for SSH-based sessions
-const REMOTE_HOSTS: Record<string, string> = {
+export const REMOTE_HOSTS: Record<string, string> = {
   "arca": "arca.ssh",
 };
 
@@ -374,26 +374,46 @@ function setupPtyHandlers(session: Session, sessionId: string, ptyProcess: Retur
 
   ptyProcess.onExit(() => {
     if (!sessions.has(sessionId)) return;
+    // Guard: only act if this PTY is still the active one (prevents race when /restart kills old PTY)
+    if (session.pty !== null && session.pty !== ptyProcess) return;
 
     session.pty = null;
 
     if (session.remote) {
-      // Remote SSH died (likely network drop) — auto-reconnect
-      log(`\x1b[38;5;208m[pty-exit]\x1b[0m Remote SSH exited for ${sessionId}, attempting auto-reconnect in 3s...`);
+      const MAX_RECONNECT = 3;
+      session.reconnectAttempts = (session.reconnectAttempts || 0) + 1;
+
+      // Extract SSH error from recent output buffer
+      const recentOutput = session.outputBuffer.slice(-10).join("");
+      const sshErrorMatch = recentOutput.match(/(Connection to .+|Connection refused.+|Connection timed out.+|ssh: .+|Permission denied.+|Host key verification failed.+|No route to host.+|Could not resolve.+|client_loop: send disconnect.+)/im);
+      const sshError = sshErrorMatch ? sshErrorMatch[1].trim() : "SSH connection lost";
+
+      log(`\x1b[38;5;208m[pty-exit]\x1b[0m Remote SSH exited for ${sessionId} (attempt ${session.reconnectAttempts}/${MAX_RECONNECT}): ${sshError}`);
       session.status = "disconnected";
+
       broadcastToSession(session, {
         type: "status",
         status: "disconnected",
+        sshError,
+        reconnectAttempt: session.reconnectAttempts,
+        maxReconnectAttempts: MAX_RECONNECT,
+      });
+
+      if (session.reconnectAttempts >= MAX_RECONNECT) {
+        broadcastToSession(session, {
+          type: "output",
+          data: `\r\n\x1b[38;5;196m[openui] SSH reconnect failed after ${MAX_RECONNECT} attempts: ${sshError}\x1b[0m\r\n\x1b[38;5;245m[openui] Use the refresh button to retry manually.\x1b[0m\r\n`,
+        });
+        return;
+      }
+
+      broadcastToSession(session, {
+        type: "output",
+        data: `\r\n\x1b[38;5;208m[openui] SSH disconnected: ${sshError}. Reconnecting (${session.reconnectAttempts}/${MAX_RECONNECT})...\x1b[0m\r\n`,
       });
 
       setTimeout(async () => {
         if (!sessions.has(sessionId) || session.pty) return;
-
-        log(`\x1b[38;5;82m[auto-reconnect]\x1b[0m Reconnecting ${sessionId}...`);
-        broadcastToSession(session, {
-          type: "output",
-          data: "\r\n\x1b[38;5;208m[openui] SSH disconnected. Reconnecting...\x1b[0m\r\n",
-        });
 
         try {
           const success = await resumeSession(sessionId);
@@ -881,9 +901,34 @@ async function createWorktreeAndStartAgent(params: {
   // Run the agent command
   const finalCommand = remote ? command : injectPluginDir(command, agentId);
   log(`\x1b[38;5;82m[pty-write]\x1b[0m Writing command: ${finalCommand}`);
-  setTimeout(() => {
-    ptyProcess.write(`${finalCommand}\r`);
-  }, remote ? 1500 : 300);
+
+  if (remote) {
+    // Wait for shell prompt before writing command
+    let commandWritten = false;
+    const SSH_ERROR_PATTERNS = ["Connection refused", "Connection timed out", "Could not resolve",
+      "Permission denied", "Host key verification failed", "No route to host",
+      "Connection closed", "client_loop: send disconnect"];
+    const fallback = setTimeout(() => {
+      if (!commandWritten && session.pty === ptyProcess) {
+        commandWritten = true;
+        ptyProcess.write(`${finalCommand}\r`);
+      }
+    }, 10000);
+    ptyProcess.onData((data: string) => {
+      if (commandWritten) return;
+      for (const pat of SSH_ERROR_PATTERNS) { if (data.includes(pat)) return; }
+      if (data.trim().length > 0) {
+        commandWritten = true;
+        clearTimeout(fallback);
+        session.reconnectAttempts = 0;
+        setTimeout(() => { if (session.pty === ptyProcess) ptyProcess.write(`${finalCommand}\r`); }, 200);
+      }
+    });
+  } else {
+    setTimeout(() => {
+      ptyProcess.write(`${finalCommand}\r`);
+    }, 300);
+  }
 
   broadcastToSession(session, {
     type: "status",
@@ -1246,9 +1291,34 @@ export function createSession(params: {
   // Run the command (skip plugin injection for remote - plugin is local only)
   const finalCommand = remote ? command : injectPluginDir(command, agentId);
   log(`\x1b[38;5;82m[pty-write]\x1b[0m Writing command: ${finalCommand}`);
-  setTimeout(() => {
-    ptyProcess.write(`${finalCommand}\r`);
-  }, remote ? 1500 : 300); // Longer delay for SSH connection to establish
+
+  if (remote) {
+    // Wait for shell prompt before writing command
+    let commandWritten = false;
+    const SSH_ERROR_PATTERNS = ["Connection refused", "Connection timed out", "Could not resolve",
+      "Permission denied", "Host key verification failed", "No route to host",
+      "Connection closed", "client_loop: send disconnect"];
+    const fallback = setTimeout(() => {
+      if (!commandWritten && session.pty === ptyProcess) {
+        commandWritten = true;
+        ptyProcess.write(`${finalCommand}\r`);
+      }
+    }, 10000);
+    ptyProcess.onData((data: string) => {
+      if (commandWritten) return;
+      for (const pat of SSH_ERROR_PATTERNS) { if (data.includes(pat)) return; }
+      if (data.trim().length > 0) {
+        commandWritten = true;
+        clearTimeout(fallback);
+        session.reconnectAttempts = 0;
+        setTimeout(() => { if (session.pty === ptyProcess) ptyProcess.write(`${finalCommand}\r`); }, 200);
+      }
+    });
+  } else {
+    setTimeout(() => {
+      ptyProcess.write(`${finalCommand}\r`);
+    }, 300);
+  }
 
   log(`\x1b[38;5;141m[session]\x1b[0m Created ${sessionId} for ${agentName}${remote ? ` on ${remote}` : ""}`);
   return { session, cwd: workingDir, gitBranch: gitBranch || undefined };
@@ -1258,7 +1328,12 @@ export function deleteSession(sessionId: string) {
   const session = sessions.get(sessionId);
   if (!session) return false;
 
-  if (session.pty) session.pty.kill();
+  // Remove from map first so onExit handler sees !sessions.has() and bails
+  sessions.delete(sessionId);
+
+  if (session.pty) {
+    try { session.pty.kill(); } catch {}
+  }
 
   // If this was a worktree session, remove the worktree
   if (session.worktreePath && session.originalCwd) {
@@ -1336,7 +1411,6 @@ export function deleteSession(sessionId: string) {
     }
   }
 
-  sessions.delete(sessionId);
   log(`\x1b[38;5;141m[session]\x1b[0m Killed ${sessionId}`);
   return true;
 }
@@ -1387,10 +1461,20 @@ export function restoreSessions() {
     log(`\x1b[38;5;245m[restore]\x1b[0m Restored ${node.sessionId} (${node.agentName}) branch: ${gitBranch || 'none'}${node.remote ? ` remote: ${node.remote}` : ''}`);
   }
 
-  // Auto-resume all sessions with staggered delays to avoid resource contention
-  if (sessionIds.length > 0) {
-    log(`\x1b[38;5;82m[auto-resume]\x1b[0m Starting auto-resume for ${sessionIds.length} sessions...`);
-    sessionIds.forEach((sid, index) => {
+  // Auto-resume sessions (skip those in TODO or On Hold)
+  const SKIP_CATEGORIES = new Set(["todo", "on-hold"]);
+  const resumeIds = sessionIds.filter((sid) => {
+    const s = sessions.get(sid);
+    if (s && s.categoryId && SKIP_CATEGORIES.has(s.categoryId)) {
+      log(`\x1b[38;5;245m[auto-resume]\x1b[0m Skipping ${sid} (category: ${s.categoryId})`);
+      return false;
+    }
+    return true;
+  });
+
+  if (resumeIds.length > 0) {
+    log(`\x1b[38;5;82m[auto-resume]\x1b[0m Starting auto-resume for ${resumeIds.length}/${sessionIds.length} sessions...`);
+    resumeIds.forEach((sid, index) => {
       setTimeout(() => {
         resumeSession(sid).catch((err) => {
           log(`\x1b[38;5;196m[auto-resume]\x1b[0m Failed to resume ${sid}: ${err}`);
@@ -1444,14 +1528,8 @@ export async function resumeSession(sessionId: string): Promise<boolean> {
   session.lastOutputTime = Date.now();
   session.outputBuffer = [];
 
-  // Rate-limit output size tracking reset
-  const resetInterval = setInterval(() => {
-    if (!sessions.has(sessionId) || !session.pty) {
-      clearInterval(resetInterval);
-      return;
-    }
-    session.recentOutputSize = Math.max(0, session.recentOutputSize - 50);
-  }, 500);
+  // Use shared handler — gives us onExit auto-reconnect for free
+  setupPtyHandlers(session, sessionId, ptyProcess);
 
   // Build the resume command
   let command = "isaac";
@@ -1462,108 +1540,151 @@ export async function resumeSession(sessionId: string): Promise<boolean> {
     finalCommand = finalCommand.replace("isaac", `isaac --resume ${session.claudeSessionId}`);
     log(`\x1b[38;5;141m[resume]\x1b[0m Attempting resume with session: ${session.claudeSessionId}`);
   } else if (session.remote) {
-    // Remote sessions don't have plugin injection, so claudeSessionId is never captured.
-    // Use --resume without an ID to resume the most recent session in the cwd.
     finalCommand = "isaac --resume";
     log(`\x1b[38;5;141m[resume]\x1b[0m Remote resume (no session ID) for ${sessionId}`);
   }
 
-  // Retry logic for "No conversation found"
+  // Retry logic for "No conversation found" — layer on top of setupPtyHandlers' onData
   let retryAttempt = 0;
+  ptyProcess.onData((data: string) => {
+    if (data.includes("No conversation found") && retryAttempt < 2) {
+      retryAttempt++;
+      if (retryAttempt === 1) {
+        session.claudeSessionId = undefined;
+        log(`\x1b[38;5;141m[resume]\x1b[0m Session ID invalid for ${sessionId}, trying --resume without ID`);
+        const retryCmd = session.remote ? "isaac --resume" : injectPluginDir("isaac --resume", session.agentId);
+        retryWithNewPty(session, sessionId, retryCmd, () => retryAttempt);
+      } else {
+        log(`\x1b[38;5;141m[resume]\x1b[0m --resume failed, starting fresh for ${sessionId}`);
+        const freshCmd = session.remote ? "isaac" : injectPluginDir("isaac", session.agentId);
+        retryWithNewPty(session, sessionId, freshCmd, () => retryAttempt);
+      }
+    }
+  });
 
-  const spawnFreshPty = () => {
+  // Write the command after shell is ready
+  if (session.remote) {
+    // For remote sessions: wait for actual shell prompt instead of blind timer.
+    // SSH errors cause immediate exit; a shell prompt means SSH connected.
+    let commandWritten = false;
+    const SSH_ERROR_PATTERNS = [
+      "Connection refused", "Connection timed out", "Could not resolve",
+      "Permission denied", "Host key verification failed", "No route to host",
+      "Connection closed", "client_loop: send disconnect",
+    ];
+
+    const promptFallback = setTimeout(() => {
+      if (!commandWritten && session.pty === ptyProcess) {
+        log(`\x1b[38;5;208m[resume]\x1b[0m Prompt detection timed out for ${sessionId}, writing command as fallback`);
+        commandWritten = true;
+        ptyProcess.write(`${finalCommand}\r`);
+      }
+    }, 10000);
+
+    ptyProcess.onData((data: string) => {
+      if (commandWritten) return;
+      // Don't write command if we see SSH error output
+      for (const pattern of SSH_ERROR_PATTERNS) {
+        if (data.includes(pattern)) return;
+      }
+      // Any non-empty, non-error output means shell prompt is ready
+      if (data.trim().length > 0) {
+        commandWritten = true;
+        clearTimeout(promptFallback);
+        session.reconnectAttempts = 0; // SSH connected successfully
+        log(`\x1b[38;5;82m[resume]\x1b[0m Shell prompt detected for ${sessionId}, writing command`);
+        setTimeout(() => {
+          if (session.pty === ptyProcess) {
+            ptyProcess.write(`${finalCommand}\r`);
+          }
+        }, 200);
+      }
+    });
+  } else {
+    setTimeout(() => {
+      ptyProcess.write(`${finalCommand}\r`);
+    }, 300);
+  }
+
+  // Broadcast running status to clients
+  broadcastToSession(session, { type: "status", status: "running" });
+
+  log(`\x1b[38;5;82m[resume]\x1b[0m Resumed ${sessionId} (${session.agentName})`);
+  return true;
+}
+
+// Helper: kill current PTY, spawn a fresh one with setupPtyHandlers, and run a command
+function retryWithNewPty(
+  session: Session,
+  sessionId: string,
+  cmd: string,
+  getRetryAttempt: () => number,
+) {
+  setTimeout(() => {
+    if (session.pty) {
+      try { session.pty.kill(); } catch {}
+      session.pty = null;
+    }
+
+    let newPty;
     if (session.remote) {
       const host = getRemoteHost(session.remote);
-      return spawnPty("ssh", sshArgs(host, `cd ${session.cwd} && exec zsh -l`), {
+      newPty = spawnPty("ssh", sshArgs(host, `cd ${session.cwd} && exec zsh -l`), {
         name: "xterm-256color",
         cwd: process.cwd(),
         env: { ...process.env, TERM: "xterm-256color" },
         rows: 30,
         cols: 120,
       });
+    } else {
+      newPty = spawnPty("/bin/zsh", [], {
+        name: "xterm-256color",
+        cwd: session.cwd,
+        env: { ...process.env, TERM: "xterm-256color", OPENUI_SESSION_ID: sessionId },
+        rows: 30,
+        cols: 120,
+      });
     }
-    return spawnPty("/bin/zsh", [], {
-      name: "xterm-256color",
-      cwd: session.cwd,
-      env: {
-        ...process.env,
-        TERM: "xterm-256color",
-        OPENUI_SESSION_ID: sessionId,
-      },
-      rows: 30,
-      cols: 120,
-    });
-  };
 
-  const restartWithCommand = (cmd: string) => {
-    setTimeout(async () => {
-      if (session.pty) {
-        session.pty.kill();
+    session.pty = newPty;
+    session.outputBuffer = [];
+    setupPtyHandlers(session, sessionId, newPty);
+
+    // Additional retry detection on the new PTY
+    newPty.onData((data: string) => {
+      if (data.includes("No conversation found") && getRetryAttempt() < 2) {
+        log(`\x1b[38;5;141m[resume]\x1b[0m --resume failed on retry, starting fresh for ${sessionId}`);
+        const freshCmd = session.remote ? "isaac" : injectPluginDir("isaac", session.agentId);
+        retryWithNewPty(session, sessionId, freshCmd, () => 2); // No more retries
       }
+    });
 
-      const newPty = spawnFreshPty();
-      session.pty = newPty;
-      session.outputBuffer = [];
-
-      newPty.onData((newData: string) => {
-        session.outputBuffer.push(newData);
-        if (session.outputBuffer.length > 1000) {
-          session.outputBuffer.shift();
+    if (session.remote) {
+      // Wait for shell prompt before writing command
+      let cmdWritten = false;
+      const SSH_ERRORS = ["Connection refused", "Connection timed out", "Could not resolve",
+        "Permission denied", "Host key verification failed", "No route to host",
+        "Connection closed", "client_loop: send disconnect"];
+      const fallback = setTimeout(() => {
+        if (!cmdWritten && session.pty === newPty) {
+          cmdWritten = true;
+          newPty.write(`${cmd}\r`);
         }
-        session.lastOutputTime = Date.now();
-        for (const client of session.clients) {
-          if (client.readyState === 1) {
-            client.send(JSON.stringify({ type: "output", data: newData }));
-          }
-        }
-
-        if (newData.includes("No conversation found") && retryAttempt < 2) {
-          retryAttempt++;
-          if (retryAttempt === 2) {
-            log(`\x1b[38;5;141m[resume]\x1b[0m --resume failed, starting fresh for ${sessionId}`);
-            const freshCmd = session.remote ? "isaac" : injectPluginDir("isaac", session.agentId);
-            restartWithCommand(freshCmd);
-          }
+      }, 10000);
+      newPty.onData((data: string) => {
+        if (cmdWritten) return;
+        for (const pat of SSH_ERRORS) { if (data.includes(pat)) return; }
+        if (data.trim().length > 0) {
+          cmdWritten = true;
+          clearTimeout(fallback);
+          session.reconnectAttempts = 0;
+          setTimeout(() => { if (session.pty === newPty) newPty.write(`${cmd}\r`); }, 200);
         }
       });
-
+    } else {
       setTimeout(() => {
         newPty.write(`${cmd}\r`);
-      }, session.remote ? 1500 : 300);
-    }, 500);
-  };
-
-  // Set up data handler with retry logic
-  ptyProcess.onData((data: string) => {
-    session.outputBuffer.push(data);
-    if (session.outputBuffer.length > 1000) {
-      session.outputBuffer.shift();
+      }, 300);
     }
-
-    session.lastOutputTime = Date.now();
-    session.recentOutputSize += data.length;
-
-    for (const client of session.clients) {
-      if (client.readyState === 1) {
-        client.send(JSON.stringify({ type: "output", data }));
-      }
-    }
-
-    if (data.includes("No conversation found") && retryAttempt === 0) {
-      retryAttempt = 1;
-      session.claudeSessionId = undefined;
-
-      log(`\x1b[38;5;141m[resume]\x1b[0m Session ID invalid for ${sessionId}, trying --resume without ID`);
-      const resumeCmd = session.remote ? "isaac --resume" : injectPluginDir("isaac --resume", session.agentId);
-      restartWithCommand(resumeCmd);
-    }
-  });
-
-  // Write the command after shell is ready
-  setTimeout(() => {
-    ptyProcess.write(`${finalCommand}\r`);
-  }, session.remote ? 1500 : 300);
-
-  log(`\x1b[38;5;82m[resume]\x1b[0m Resumed ${sessionId} (${session.agentName})`);
-  return true;
+  }, 500);
 }

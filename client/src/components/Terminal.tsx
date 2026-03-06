@@ -135,6 +135,9 @@ export function Terminal({ sessionId, color, nodeId, isActive = true }: Terminal
               isRestored: msg.isRestored,
               currentTool: msg.currentTool,
               creationProgress: msg.creationProgress,
+              sshError: msg.sshError,
+              reconnectAttempt: msg.reconnectAttempt,
+              maxReconnectAttempts: msg.maxReconnectAttempts,
             });
           }
         } catch (e) {

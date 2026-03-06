@@ -26,6 +26,11 @@ const DEFAULT_WORKTREE_CONFIG: WorktreeConfig = {
       sparseCheckout: true,
       sparseCheckoutPaths: ["docs", "managed-evals", "managed-rag", "rag", "mlflow"],
       remote: "arca"
+    },
+    {
+      name: "MLflow Website",
+      path: "/Users/samraj.moorjani/personal_repos/mlflow-website",
+      baseBranch: "main"
     }
   ]
 };

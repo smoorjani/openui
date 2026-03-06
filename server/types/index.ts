@@ -38,6 +38,8 @@ export interface Session {
   creationProgress?: string;
   // Remote execution (e.g. "arca" for SSH-based sessions)
   remote?: string;
+  // Auto-reconnect tracking for remote sessions
+  reconnectAttempts?: number;
   // List view fields
   categoryId?: string;
   sortOrder?: number;

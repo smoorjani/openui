@@ -31,6 +31,9 @@ export interface AgentSession {
   currentTool?: string;
   remote?: string;
   creationProgress?: string;
+  sshError?: string;
+  reconnectAttempt?: number;
+  maxReconnectAttempts?: number;
   categoryId?: string;
   sortOrder?: number;
   dueDate?: string;
@@ -92,6 +95,7 @@ interface AppState {
 }
 
 const DEFAULT_LIST_SECTIONS: ListSection[] = [
+  { id: "pinned", label: "Pinned", color: "#F97316" },
   { id: "todo", label: "TODO", color: "#22C55E" },
   { id: "in-progress", label: "In Progress", color: "#3B82F6" },
   { id: "in-review", label: "In Review", color: "#8B5CF6" },
@@ -101,7 +105,19 @@ const DEFAULT_LIST_SECTIONS: ListSection[] = [
 function loadListSections(): ListSection[] {
   try {
     const saved = localStorage.getItem("openui-list-sections");
-    if (saved) return JSON.parse(saved);
+    if (saved) {
+      const sections: ListSection[] = JSON.parse(saved);
+      // Merge in any new default sections that don't exist yet
+      const existingIds = new Set(sections.map((s) => s.id));
+      for (const def of DEFAULT_LIST_SECTIONS) {
+        if (!existingIds.has(def.id)) {
+          // Insert at the same position as in defaults
+          const defIndex = DEFAULT_LIST_SECTIONS.indexOf(def);
+          sections.splice(defIndex, 0, def);
+        }
+      }
+      return sections;
+    }
   } catch {}
   return DEFAULT_LIST_SECTIONS;
 }
