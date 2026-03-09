@@ -44,6 +44,7 @@ export interface ListSection {
   label: string;
   color: string;
   collapsed?: boolean;
+  group?: "sprint" | "oncall";
 }
 
 interface AppState {
@@ -95,11 +96,15 @@ interface AppState {
 }
 
 const DEFAULT_LIST_SECTIONS: ListSection[] = [
-  { id: "pinned", label: "Pinned", color: "#F97316" },
-  { id: "todo", label: "TODO", color: "#22C55E" },
-  { id: "in-progress", label: "In Progress", color: "#3B82F6" },
-  { id: "in-review", label: "In Review", color: "#8B5CF6" },
-  { id: "on-hold", label: "On Hold", color: "#FBBF24" },
+  { id: "pinned", label: "Pinned", color: "#F97316", group: "sprint" },
+  { id: "todo", label: "TODO", color: "#22C55E", group: "sprint" },
+  { id: "in-progress", label: "In Progress", color: "#3B82F6", group: "sprint" },
+  { id: "in-review", label: "In Review", color: "#8B5CF6", group: "sprint" },
+  { id: "on-hold", label: "On Hold", color: "#FBBF24", group: "sprint" },
+  { id: "oncall-todo", label: "TODO", color: "#06B6D4", group: "oncall" },
+  { id: "oncall-in-progress", label: "In Progress", color: "#14B8A6", group: "oncall" },
+  { id: "oncall-in-review", label: "In Review", color: "#22D3EE", group: "oncall" },
+  { id: "oncall-waiting", label: "Waiting", color: "#67E8F9", group: "oncall" },
 ];
 
 function loadListSections(): ListSection[] {

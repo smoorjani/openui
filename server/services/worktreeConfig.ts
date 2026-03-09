@@ -17,14 +17,14 @@ const DEFAULT_WORKTREE_CONFIG: WorktreeConfig = {
       path: "/Users/samraj.moorjani/universe",
       baseBranch: "main",
       sparseCheckout: true,
-      sparseCheckoutPaths: ["docs", "managed-evals", "managed-rag", "rag", "mlflow"]
+      sparseCheckoutPaths: ["docs", "managed-evals", "managed-rag", "rag", "mlflow", "experimental"]
     },
     {
       name: "Universe (Arca)",
       path: "~/universe",
       baseBranch: "main",
       sparseCheckout: true,
-      sparseCheckoutPaths: ["docs", "managed-evals", "managed-rag", "rag", "mlflow"],
+      sparseCheckoutPaths: ["docs", "managed-evals", "managed-rag", "rag", "mlflow", "experimental"],
       remote: "arca"
     },
     {

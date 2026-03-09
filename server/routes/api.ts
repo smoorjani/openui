@@ -157,6 +157,8 @@ apiRoutes.post("/sessions", async (c) => {
     sparseCheckout,
     sparseCheckoutPaths,
     remote,
+    initialPrompt,
+    categoryId,
   } = body;
 
   const sessionId = `session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -177,6 +179,8 @@ apiRoutes.post("/sessions", async (c) => {
     sparseCheckout,
     sparseCheckoutPaths,
     remote,
+    initialPrompt,
+    categoryId,
   });
 
   saveState(sessions);

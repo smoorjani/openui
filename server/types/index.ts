@@ -36,6 +36,8 @@ export interface Session {
   lastHookEvent?: string;
   // Worktree creation progress message
   creationProgress?: string;
+  // Initial prompt to send after agent starts
+  initialPrompt?: string;
   // Remote execution (e.g. "arca" for SSH-based sessions)
   remote?: string;
   // Auto-reconnect tracking for remote sessions
@@ -75,6 +77,7 @@ export interface PersistedNode {
   position: { x: number; y: number };
   claudeSessionId?: string;  // Claude Code's internal session ID for --resume
   remote?: string; // Remote host for SSH-based sessions
+  initialPrompt?: string; // Initial prompt to send after agent starts
   categoryId?: string;
   sortOrder?: number;
   dueDate?: string;

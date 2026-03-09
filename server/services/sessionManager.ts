@@ -438,6 +438,51 @@ function setupPtyHandlers(session: Session, sessionId: string, ptyProcess: Retur
   });
 }
 
+// Schedule an initial prompt to be written to PTY once isaac is ready.
+// Uses two strategies:
+// 1. Poll session.status for "waiting_input" (set by plugin hook — most reliable)
+// 2. Fallback: send after 15s if plugin hook never fires
+function scheduleInitialPrompt(session: Session, sessionId: string, ptyProcess: ReturnType<typeof spawnPty>) {
+  if (!session.initialPrompt) return;
+
+  const prompt = session.initialPrompt;
+  let sent = false;
+
+  const send = (reason: string) => {
+    if (sent) return;
+    sent = true;
+    session.initialPrompt = undefined;
+    log(`\x1b[38;5;82m[initial-prompt]\x1b[0m ${reason} — sending to ${sessionId}`);
+    // Small delay to let the UI fully render
+    setTimeout(() => {
+      if (session.pty === ptyProcess) {
+        ptyProcess.write(`${prompt}\r`);
+      }
+    }, 300);
+  };
+
+  // Strategy 1: Poll for plugin-reported waiting_input status
+  // The plugin hook sets session.status = "waiting_input" when isaac shows its prompt
+  const pollInterval = setInterval(() => {
+    if (sent || !sessions.has(sessionId) || session.pty !== ptyProcess) {
+      clearInterval(pollInterval);
+      return;
+    }
+    if (session.pluginReportedStatus && session.status === "waiting_input") {
+      clearInterval(pollInterval);
+      send("Plugin reported waiting_input");
+    }
+  }, 500);
+
+  // Strategy 2: Fallback timeout
+  setTimeout(() => {
+    clearInterval(pollInterval);
+    if (!sent && session.initialPrompt && session.pty === ptyProcess) {
+      send("Fallback timeout");
+    }
+  }, 15000);
+}
+
 // Get the OpenUI plugin directory path
 function getPluginDir(): string | null {
   // Check for plugin in ~/.openui/claude-code-plugin (installed via curl)
@@ -935,6 +980,9 @@ async function createWorktreeAndStartAgent(params: {
     status: "waiting_input",
   });
 
+  // Send initial prompt after isaac is ready
+  scheduleInitialPrompt(session, sessionId, ptyProcess);
+
   log(`\x1b[38;5;141m[worktree-async]\x1b[0m Completed ${sessionId}`);
 }
 
@@ -1125,6 +1173,8 @@ export function createSession(params: {
   sparseCheckout?: boolean;
   sparseCheckoutPaths?: string[];
   remote?: string;
+  initialPrompt?: string;
+  categoryId?: string;
 }): { session: Session; cwd: string; gitBranch?: string } {
   const {
     sessionId,
@@ -1141,6 +1191,8 @@ export function createSession(params: {
     sparseCheckout,
     sparseCheckoutPaths,
     remote,
+    initialPrompt,
+    categoryId,
   } = params;
 
   let workingDir = originalCwd;
@@ -1192,6 +1244,8 @@ export function createSession(params: {
       nodeId,
       isRestored: false,
       remote,
+      initialPrompt,
+      categoryId,
     };
 
     sessions.set(sessionId, session);
@@ -1283,6 +1337,8 @@ export function createSession(params: {
     nodeId,
     isRestored: false,
     remote,
+    initialPrompt,
+    categoryId,
   };
 
   sessions.set(sessionId, session);
@@ -1319,6 +1375,9 @@ export function createSession(params: {
       ptyProcess.write(`${finalCommand}\r`);
     }, 300);
   }
+
+  // Send initial prompt after isaac is ready
+  scheduleInitialPrompt(session, sessionId, ptyProcess);
 
   log(`\x1b[38;5;141m[session]\x1b[0m Created ${sessionId} for ${agentName}${remote ? ` on ${remote}` : ""}`);
   return { session, cwd: workingDir, gitBranch: gitBranch || undefined };

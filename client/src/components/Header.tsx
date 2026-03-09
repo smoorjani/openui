@@ -1,14 +1,16 @@
 import { useState } from "react";
-import { Plus, Folder, Settings, GitBranch } from "lucide-react";
+import { Plus, Folder, Settings, GitBranch, AlertTriangle } from "lucide-react";
 import { motion } from "framer-motion";
 import { useStore } from "../stores/useStore";
 import { SettingsModal } from "./SettingsModal";
 import { WorktreeModal } from "./WorktreeModal";
+import { InvestigationModal } from "./InvestigationModal";
 
 export function Header() {
   const { setAddAgentModalOpen, sessions, launchCwd } = useStore();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [worktreeOpen, setWorktreeOpen] = useState(false);
+  const [investigationOpen, setInvestigationOpen] = useState(false);
 
   return (
     <header className="h-14 px-4 flex items-center justify-between border-b border-border bg-canvas-dark">
@@ -56,6 +58,15 @@ export function Header() {
           New Worktree
         </motion.button>
         <motion.button
+          onClick={() => setInvestigationOpen(true)}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface border border-cyan-800/50 text-cyan-300 text-sm font-medium hover:bg-cyan-900/30 hover:text-cyan-200 transition-colors"
+          whileHover={{ scale: 1.02 }}
+          whileTap={{ scale: 0.98 }}
+        >
+          <AlertTriangle className="w-4 h-4" />
+          New Investigation
+        </motion.button>
+        <motion.button
           onClick={() => setAddAgentModalOpen(true)}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-white text-canvas text-sm font-medium hover:bg-zinc-100 transition-colors"
           whileHover={{ scale: 1.02 }}
@@ -68,6 +79,7 @@ export function Header() {
 
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <WorktreeModal open={worktreeOpen} onClose={() => setWorktreeOpen(false)} />
+      <InvestigationModal open={investigationOpen} onClose={() => setInvestigationOpen(false)} />
     </header>
   );
 }
