@@ -4,6 +4,10 @@
 
 Manage multiple AI coding agents working in parallel. See what each agent is working on, their status, and jump in when they need help.
 
+
+https://github.com/user-attachments/assets/a962a1f5-60f9-492e-80a8-72e2592ce8e7
+
+
 ## Setup
 
 ```bash
