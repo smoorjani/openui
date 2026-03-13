@@ -187,6 +187,13 @@ export function Terminal({ sessionId, color, nodeId, isActive = true }: Terminal
         }
         return false; // Block all Shift+Enter events
       }
+      // Cmd+Backspace → kill line (Ctrl+U)
+      if (event.key === 'Backspace' && event.metaKey) {
+        if (event.type === 'keydown' && wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ type: "input", data: "\x15" }));
+        }
+        return false;
+      }
       return true; // Allow default handling for other keys
     });
 

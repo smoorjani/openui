@@ -158,6 +158,12 @@ export function ShellTerminal({ sessionId, cwd, color, remote }: ShellTerminalPr
         }
         return false;
       }
+      if (event.key === 'Backspace' && event.metaKey) {
+        if (event.type === 'keydown' && wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ type: "input", data: "\x15" }));
+        }
+        return false;
+      }
       return true;
     });
 
