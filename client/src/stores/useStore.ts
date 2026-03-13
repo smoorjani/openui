@@ -137,7 +137,7 @@ export const useStore = create<AppState>((set) => ({
   setLaunchCwd: (cwd) => set({ launchCwd: cwd }),
 
   // UI Mode
-  uiMode: (localStorage.getItem("openui-ui-mode") as "canvas" | "list") || "canvas",
+  uiMode: (localStorage.getItem("openui-ui-mode") as "canvas" | "list") || "list",
   setUiMode: (mode) => {
     localStorage.setItem("openui-ui-mode", mode);
     set({ uiMode: mode });

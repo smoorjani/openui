@@ -108,6 +108,26 @@ export function Terminal({ sessionId, color, nodeId, isActive = true }: Terminal
 
     let ws: WebSocket | null = null;
 
+    // Batch terminal writes using requestAnimationFrame to prevent
+    // xterm.js from being overwhelmed by rapid PTY output (especially over SSH)
+    const writeBuffer: string[] = [];
+    let rafId: number | null = null;
+
+    const flushWrites = () => {
+      rafId = null;
+      if (writeBuffer.length === 0) return;
+      const data = writeBuffer.join("");
+      writeBuffer.length = 0;
+      term.write(data);
+    };
+
+    const batchWrite = (data: string) => {
+      writeBuffer.push(data);
+      if (rafId === null) {
+        rafId = requestAnimationFrame(flushWrites);
+      }
+    };
+
     const connectWs = () => {
       if (!mountedRef.current) return;
 
@@ -128,7 +148,7 @@ export function Terminal({ sessionId, color, nodeId, isActive = true }: Terminal
         try {
           const msg = JSON.parse(event.data);
           if (msg.type === "output") {
-            term.write(msg.data);
+            batchWrite(msg.data);
           } else if (msg.type === "status") {
             updateSession(nodeId, {
               status: msg.status as AgentStatus,
@@ -212,6 +232,7 @@ export function Terminal({ sessionId, color, nodeId, isActive = true }: Terminal
       mountedRef.current = false;
       clearTimeout(connectTimeout);
       if (resizeTimeout) clearTimeout(resizeTimeout);
+      if (rafId !== null) cancelAnimationFrame(rafId);
       resizeObserver.disconnect();
       ws?.close();
       term.dispose();

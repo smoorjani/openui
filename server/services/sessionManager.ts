@@ -290,8 +290,13 @@ export function getRemoteHost(remote: string): string {
   return REMOTE_HOSTS[remote] || remote;
 }
 
+// Port for the SSH reverse tunnel (remote → local). Use a high port to avoid
+// conflicts with other services on shared remote machines like Arca.
+const TUNNEL_PORT = 46968;
+const SERVER_PORT = parseInt(process.env.PORT || "6968", 10);
+
 function sshArgs(host: string, remoteCommand: string): string[] {
-  return ["-t", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", host, remoteCommand];
+  return ["-t", "-R", `${TUNNEL_PORT}:localhost:${SERVER_PORT}`, "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", host, remoteCommand];
 }
 
 function sshExec(remote: string, command: string): { exitCode: number; stdout: string; stderr: string } {
@@ -507,15 +512,16 @@ function getPluginDir(): string | null {
   return null;
 }
 
-// Inject --plugin-dir flag for Claude commands if plugin is available
+// Inject --plugin-dir flag for Claude commands if plugin is available.
+// Supports multiple --plugin-dir flags (won't duplicate if already present).
 export function injectPluginDir(command: string, agentId: string): string {
   if (agentId !== "claude") return command;
 
   const pluginDir = getPluginDir();
   if (!pluginDir) return command;
 
-  // Check if command already has --plugin-dir
-  if (command.includes("--plugin-dir")) return command;
+  // Skip if this specific plugin dir is already in the command
+  if (command.includes(pluginDir)) return command;
 
   const parts = command.split(/\s+/);
 
@@ -527,6 +533,46 @@ export function injectPluginDir(command: string, agentId: string): string {
     return finalCmd;
   }
 
+  return command;
+}
+
+// Remote plugin path on SSH hosts (synced via rsync)
+const REMOTE_PLUGIN_PATH = "~/.openui/claude-code-plugin";
+
+// Sync the local plugin directory to a remote host via rsync
+async function syncPluginToRemote(remote: string): Promise<boolean> {
+  const localPluginDir = getPluginDir();
+  if (!localPluginDir) {
+    log(`\x1b[38;5;245m[plugin-sync]\x1b[0m No local plugin found, skipping sync`);
+    return false;
+  }
+  const host = getRemoteHost(remote);
+  log(`\x1b[38;5;141m[plugin-sync]\x1b[0m Syncing plugin to ${host}:${REMOTE_PLUGIN_PATH}`);
+  const result = await execAsync([
+    "rsync", "-az", "--delete", `${localPluginDir}/`, `${host}:${REMOTE_PLUGIN_PATH}/`,
+  ]);
+  if (result.exitCode !== 0) {
+    logError(`\x1b[38;5;196m[plugin-sync]\x1b[0m Failed: ${result.stderr}`);
+    return false;
+  }
+  log(`\x1b[38;5;82m[plugin-sync]\x1b[0m Plugin synced to ${host}`);
+  return true;
+}
+
+// Inject --plugin-dir with the remote path for SSH sessions.
+// Supports multiple --plugin-dir flags (won't duplicate if already present).
+function injectRemotePluginDir(command: string, agentId: string): string {
+  if (agentId !== "claude") return command;
+  // Skip if this specific remote plugin path is already in the command
+  if (command.includes(REMOTE_PLUGIN_PATH)) return command;
+  const parts = command.split(/\s+/);
+  if (parts[0] === "isaac") {
+    parts.splice(1, 0, "--plugin-dir", REMOTE_PLUGIN_PATH);
+    const finalCmd = parts.join(" ");
+    log(`\x1b[38;5;141m[plugin]\x1b[0m Injecting remote plugin-dir: ${REMOTE_PLUGIN_PATH}`);
+    log(`\x1b[38;5;141m[plugin]\x1b[0m Final command: ${finalCmd}`);
+    return finalCmd;
+  }
   return command;
 }
 
@@ -910,13 +956,19 @@ async function createWorktreeAndStartAgent(params: {
     return;
   }
 
+  // Sync plugin to remote before starting agent
+  if (remote) {
+    sendProgress("Syncing plugin...");
+    await syncPluginToRemote(remote);
+  }
+
   sendProgress("Starting agent...");
 
   // Spawn PTY
   let ptyProcess;
   if (remote) {
     const host = getRemoteHost(remote);
-    ptyProcess = spawnPty("ssh", sshArgs(host, `cd ${session.cwd} && exec zsh -l`), {
+    ptyProcess = spawnPty("ssh", sshArgs(host, `cd ${session.cwd} && export OPENUI_SESSION_ID=${sessionId} OPENUI_PORT=${TUNNEL_PORT} && exec zsh -l`), {
       name: "xterm-256color",
       cwd: process.cwd(),
       env: { ...process.env, TERM: "xterm-256color" },
@@ -944,7 +996,7 @@ async function createWorktreeAndStartAgent(params: {
   setupPtyHandlers(session, sessionId, ptyProcess);
 
   // Run the agent command
-  const finalCommand = remote ? command : injectPluginDir(command, agentId);
+  const finalCommand = remote ? injectRemotePluginDir(command, agentId) : injectPluginDir(command, agentId);
   log(`\x1b[38;5;82m[pty-write]\x1b[0m Writing command: ${finalCommand}`);
 
   if (remote) {
@@ -1286,11 +1338,16 @@ export function createSession(params: {
     gitBranch = getGitBranch(workingDir);
   }
 
+  // Sync plugin to remote (fire-and-forget — SSH prompt detection delay provides buffer)
+  if (remote) {
+    syncPluginToRemote(remote).catch(() => {});
+  }
+
   // Spawn PTY: SSH for remote sessions, local zsh otherwise
   let ptyProcess;
   if (remote) {
     const host = getRemoteHost(remote);
-    ptyProcess = spawnPty("ssh", sshArgs(host, `cd ${workingDir} && exec zsh -l`), {
+    ptyProcess = spawnPty("ssh", sshArgs(host, `cd ${workingDir} && export OPENUI_SESSION_ID=${sessionId} OPENUI_PORT=${TUNNEL_PORT} && exec zsh -l`), {
       name: "xterm-256color",
       cwd: process.cwd(),
       env: {
@@ -1344,8 +1401,8 @@ export function createSession(params: {
   sessions.set(sessionId, session);
   setupPtyHandlers(session, sessionId, ptyProcess);
 
-  // Run the command (skip plugin injection for remote - plugin is local only)
-  const finalCommand = remote ? command : injectPluginDir(command, agentId);
+  // Run the command (inject plugin dir for both local and remote)
+  const finalCommand = remote ? injectRemotePluginDir(command, agentId) : injectPluginDir(command, agentId);
   log(`\x1b[38;5;82m[pty-write]\x1b[0m Writing command: ${finalCommand}`);
 
   if (remote) {
@@ -1556,11 +1613,36 @@ export async function resumeSession(sessionId: string): Promise<boolean> {
 
   log(`\x1b[38;5;82m[resume]\x1b[0m Resuming ${sessionId} (${session.agentName})...`);
 
+  // For remote sessions: sync plugin and recover claude session ID if missing
+  if (session.remote) {
+    await syncPluginToRemote(session.remote);
+
+    // Try to recover claude session ID from the remote filesystem
+    // (saved by status-reporter.sh to ~/.openui/sessions/<id>.id)
+    if (!session.claudeSessionId) {
+      const result = await sshExecAsync(session.remote, `cat ~/.openui/sessions/${sessionId}.id 2>/dev/null`);
+      if (result.exitCode === 0 && result.stdout.trim()) {
+        session.claudeSessionId = result.stdout.trim();
+        log(`\x1b[38;5;82m[resume]\x1b[0m Recovered claude session ID from remote: ${session.claudeSessionId}`);
+      }
+    }
+  } else if (!session.claudeSessionId) {
+    // Also check locally for the session ID file
+    const localIdFile = join(homedir(), ".openui", "sessions", `${sessionId}.id`);
+    if (existsSync(localIdFile)) {
+      const id = readFileSync(localIdFile, "utf-8").trim();
+      if (id) {
+        session.claudeSessionId = id;
+        log(`\x1b[38;5;82m[resume]\x1b[0m Recovered claude session ID from local file: ${session.claudeSessionId}`);
+      }
+    }
+  }
+
   // Spawn PTY: SSH for remote sessions, local zsh otherwise
   let ptyProcess;
   if (session.remote) {
     const host = getRemoteHost(session.remote);
-    ptyProcess = spawnPty("ssh", sshArgs(host, `cd ${session.cwd} && exec zsh -l`), {
+    ptyProcess = spawnPty("ssh", sshArgs(host, `cd ${session.cwd} && export OPENUI_SESSION_ID=${sessionId} OPENUI_PORT=${TUNNEL_PORT} && exec zsh -l`), {
       name: "xterm-256color",
       cwd: process.cwd(),
       env: { ...process.env, TERM: "xterm-256color" },
@@ -1590,17 +1672,40 @@ export async function resumeSession(sessionId: string): Promise<boolean> {
   // Use shared handler — gives us onExit auto-reconnect for free
   setupPtyHandlers(session, sessionId, ptyProcess);
 
-  // Build the resume command
-  let command = "isaac";
-  let finalCommand = session.remote ? command : injectPluginDir(command, session.agentId);
+  // Build the resume command, preserving ALL original --plugin-dir flags
+  // and injecting our openui status plugin alongside them.
+  const originalPluginDirs: string[] = [];
+  const pluginDirRegex = /--plugin-dir\s+(\S+)/g;
+  let pluginMatch;
+  while ((pluginMatch = pluginDirRegex.exec(session.command)) !== null) {
+    originalPluginDirs.push(pluginMatch[1]);
+  }
 
+  // Reconstruct base command: isaac + all original plugin-dirs + our injected one
+  const buildCommand = (base: string): string => {
+    let cmd = base;
+    for (const dir of originalPluginDirs) {
+      if (!cmd.includes(dir)) {
+        cmd = cmd.replace("isaac", `isaac --plugin-dir ${dir}`);
+      }
+    }
+    // Also inject our openui status plugin
+    if (session.remote) {
+      cmd = injectRemotePluginDir(cmd, session.agentId);
+    } else {
+      cmd = injectPluginDir(cmd, session.agentId);
+    }
+    return cmd;
+  };
+
+  let finalCommand: string;
   const hasSessionId = session.agentId === "claude" && session.claudeSessionId;
   if (hasSessionId) {
-    finalCommand = finalCommand.replace("isaac", `isaac --resume ${session.claudeSessionId}`);
+    finalCommand = buildCommand(`isaac --resume ${session.claudeSessionId}`);
     log(`\x1b[38;5;141m[resume]\x1b[0m Attempting resume with session: ${session.claudeSessionId}`);
-  } else if (session.remote) {
-    finalCommand = "isaac --resume";
-    log(`\x1b[38;5;141m[resume]\x1b[0m Remote resume (no session ID) for ${sessionId}`);
+  } else {
+    finalCommand = buildCommand("isaac --resume");
+    log(`\x1b[38;5;141m[resume]\x1b[0m Resume (no session ID) for ${sessionId}`);
   }
 
   // Retry logic for "No conversation found" — layer on top of setupPtyHandlers' onData
@@ -1611,12 +1716,10 @@ export async function resumeSession(sessionId: string): Promise<boolean> {
       if (retryAttempt === 1) {
         session.claudeSessionId = undefined;
         log(`\x1b[38;5;141m[resume]\x1b[0m Session ID invalid for ${sessionId}, trying --resume without ID`);
-        const retryCmd = session.remote ? "isaac --resume" : injectPluginDir("isaac --resume", session.agentId);
-        retryWithNewPty(session, sessionId, retryCmd, () => retryAttempt);
+        retryWithNewPty(session, sessionId, buildCommand("isaac --resume"), () => retryAttempt);
       } else {
         log(`\x1b[38;5;141m[resume]\x1b[0m --resume failed, starting fresh for ${sessionId}`);
-        const freshCmd = session.remote ? "isaac" : injectPluginDir("isaac", session.agentId);
-        retryWithNewPty(session, sessionId, freshCmd, () => retryAttempt);
+        retryWithNewPty(session, sessionId, buildCommand("isaac"), () => retryAttempt);
       }
     }
   });
@@ -1679,16 +1782,21 @@ function retryWithNewPty(
   cmd: string,
   getRetryAttempt: () => number,
 ) {
-  setTimeout(() => {
+  setTimeout(async () => {
     if (session.pty) {
       try { session.pty.kill(); } catch {}
       session.pty = null;
     }
 
+    // Sync plugin to remote before retrying
+    if (session.remote) {
+      await syncPluginToRemote(session.remote).catch(() => {});
+    }
+
     let newPty;
     if (session.remote) {
       const host = getRemoteHost(session.remote);
-      newPty = spawnPty("ssh", sshArgs(host, `cd ${session.cwd} && exec zsh -l`), {
+      newPty = spawnPty("ssh", sshArgs(host, `cd ${session.cwd} && export OPENUI_SESSION_ID=${sessionId} OPENUI_PORT=${TUNNEL_PORT} && exec zsh -l`), {
         name: "xterm-256color",
         cwd: process.cwd(),
         env: { ...process.env, TERM: "xterm-256color" },
@@ -1709,11 +1817,23 @@ function retryWithNewPty(
     session.outputBuffer = [];
     setupPtyHandlers(session, sessionId, newPty);
 
-    // Additional retry detection on the new PTY
+    // Additional retry detection on the new PTY — rebuild with ALL plugin-dirs
     newPty.onData((data: string) => {
       if (data.includes("No conversation found") && getRetryAttempt() < 2) {
         log(`\x1b[38;5;141m[resume]\x1b[0m --resume failed on retry, starting fresh for ${sessionId}`);
-        const freshCmd = session.remote ? "isaac" : injectPluginDir("isaac", session.agentId);
+        let freshCmd = "isaac";
+        // Restore all original plugin-dirs from the session command
+        const dirRegex = /--plugin-dir\s+(\S+)/g;
+        let m;
+        while ((m = dirRegex.exec(session.command)) !== null) {
+          if (!freshCmd.includes(m[1])) {
+            freshCmd += ` --plugin-dir ${m[1]}`;
+          }
+        }
+        // Inject our openui status plugin
+        freshCmd = session.remote
+          ? injectRemotePluginDir(freshCmd, session.agentId)
+          : injectPluginDir(freshCmd, session.agentId);
         retryWithNewPty(session, sessionId, freshCmd, () => 2); // No more retries
       }
     });

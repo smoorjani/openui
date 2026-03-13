@@ -83,6 +83,26 @@ export function ShellTerminal({ sessionId, cwd, color, remote }: ShellTerminalPr
     const remoteParam = remote ? `&remote=${encodeURIComponent(remote)}` : "";
     const wsUrl = `${protocol}//${window.location.host}/ws/shell?sessionId=${sessionId}&cwd=${encodeURIComponent(cwd)}${remoteParam}`;
 
+    // Batch terminal writes using requestAnimationFrame to prevent
+    // xterm.js from being overwhelmed by rapid PTY output (especially over SSH)
+    const writeBuffer: string[] = [];
+    let rafId: number | null = null;
+
+    const flushWrites = () => {
+      rafId = null;
+      if (writeBuffer.length === 0) return;
+      const data = writeBuffer.join("");
+      writeBuffer.length = 0;
+      term.write(data);
+    };
+
+    const batchWrite = (data: string) => {
+      writeBuffer.push(data);
+      if (rafId === null) {
+        rafId = requestAnimationFrame(flushWrites);
+      }
+    };
+
     const connectWs = () => {
       if (!mountedRef.current) return;
 
@@ -100,7 +120,7 @@ export function ShellTerminal({ sessionId, cwd, color, remote }: ShellTerminalPr
         try {
           const msg = JSON.parse(event.data);
           if (msg.type === "output") {
-            term.write(msg.data);
+            batchWrite(msg.data);
           } else if (msg.type === "exited") {
             setShellExited(true);
             term.write("\r\n\x1b[38;5;208mShell process exited. Click restart to respawn.\x1b[0m\r\n");
@@ -170,6 +190,7 @@ export function ShellTerminal({ sessionId, cwd, color, remote }: ShellTerminalPr
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
       }
+      if (rafId !== null) cancelAnimationFrame(rafId);
       resizeObserver.disconnect();
       wsRef.current?.close();
       term.dispose();

@@ -70,6 +70,13 @@ fi
 echo "[$(date)] Hook: event=$HOOK_EVENT status=$STATUS tool=$TOOL_NAME notification=$NOTIFICATION_TYPE openui=$OPENUI_SID" >> "$DEBUG_LOG" 2>/dev/null || true
 echo "[$(date)] Input preview: $INPUT_PREVIEW" >> "$DEBUG_LOG" 2>/dev/null || true
 
+# Persist Claude session ID locally so remote sessions can be resumed even if
+# the reverse tunnel is down. File is read by OpenUI server via SSH on resume.
+if [ -n "$CLAUDE_SESSION_ID" ] && [ -n "$OPENUI_SID" ]; then
+  mkdir -p ~/.openui/sessions 2>/dev/null || true
+  echo "$CLAUDE_SESSION_ID" > ~/.openui/sessions/${OPENUI_SID}.id 2>/dev/null || true
+fi
+
 # Build the JSON payload with all available data
 if [ -n "$STATUS" ]; then
   # Start JSON payload
