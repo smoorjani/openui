@@ -49,6 +49,45 @@ export function loadWorktreeConfig(): WorktreeConfig {
   return DEFAULT_WORKTREE_CONFIG;
 }
 
+export interface AppSettings {
+  skipPermissions?: boolean;
+}
+
+export function loadSettings(): AppSettings {
+  try {
+    if (existsSync(CONFIG_FILE)) {
+      const fileConfig = JSON.parse(readFileSync(CONFIG_FILE, "utf-8"));
+      return { skipPermissions: fileConfig.skipPermissions ?? false };
+    }
+  } catch (e) {
+    console.error("Failed to load settings:", e);
+  }
+  return { skipPermissions: false };
+}
+
+export function saveSettings(settings: AppSettings): void {
+  try {
+    const dir = join(LAUNCH_CWD, ".openui");
+    if (!existsSync(dir)) {
+      require("fs").mkdirSync(dir, { recursive: true });
+    }
+
+    let existingConfig = {};
+    if (existsSync(CONFIG_FILE)) {
+      existingConfig = JSON.parse(readFileSync(CONFIG_FILE, "utf-8"));
+    }
+
+    const updatedConfig = {
+      ...existingConfig,
+      ...settings,
+    };
+
+    writeFileSync(CONFIG_FILE, JSON.stringify(updatedConfig, null, 2));
+  } catch (e) {
+    console.error("Failed to save settings:", e);
+  }
+}
+
 export function saveWorktreeConfig(worktreeRepos: WorktreeRepo[]): void {
   try {
     const dir = join(LAUNCH_CWD, ".openui");

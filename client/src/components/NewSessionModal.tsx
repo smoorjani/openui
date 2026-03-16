@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   X,
   FolderOpen,
+  FolderPlus,
   Terminal,
   Plus,
   Minus,
@@ -157,6 +158,9 @@ export function NewSessionModal({
   const [dirBrowseDirs, setDirBrowseDirs] = useState<{ name: string; path: string }[]>([]);
   const [dirBrowseLoading, setDirBrowseLoading] = useState(false);
   const [dirBrowseError, setDirBrowseError] = useState<string | null>(null);
+  const [newFolderName, setNewFolderName] = useState("");
+  const [showNewFolder, setShowNewFolder] = useState(false);
+  const [creatingFolder, setCreatingFolder] = useState(false);
 
   // GitHub state
   const [githubRepoUrl, setGithubRepoUrl] = useState("");
@@ -175,20 +179,32 @@ export function NewSessionModal({
   // Track if we've initialized for this modal open
   const [initialized, setInitialized] = useState(false);
 
+  // Update cwd, recent dirs, and close dir picker when remote changes
+  useEffect(() => {
+    setShowDirPicker(false);
+    setCwd(remote ? DEFAULT_REMOTE_CWD : DEFAULT_CWD);
+    setRecentDirs(loadRecentDirs(remote || undefined));
+  }, [remote]);
+
   const DEFAULT_CWD = "/Users/samraj.moorjani";
+  const DEFAULT_REMOTE_CWD = "~";
   const MAX_RECENT_DIRS = 5;
 
-  const loadRecentDirs = (): string[] => {
+  const recentDirsKey = (host?: string) =>
+    host ? `openui-recent-dirs-${host}` : "openui-recent-dirs";
+
+  const loadRecentDirs = (host?: string): string[] => {
     try {
-      return JSON.parse(localStorage.getItem("openui-recent-dirs") || "[]");
+      return JSON.parse(localStorage.getItem(recentDirsKey(host)) || "[]");
     } catch { return []; }
   };
 
-  const saveRecentDir = (dir: string) => {
+  const saveRecentDir = (dir: string, host?: string) => {
     if (!dir) return;
-    const recent = loadRecentDirs().filter(d => d !== dir);
+    const key = recentDirsKey(host);
+    const recent = loadRecentDirs(host).filter(d => d !== dir);
     recent.unshift(dir);
-    localStorage.setItem("openui-recent-dirs", JSON.stringify(recent.slice(0, MAX_RECENT_DIRS)));
+    localStorage.setItem(key, JSON.stringify(recent.slice(0, MAX_RECENT_DIRS)));
   };
 
   // Reset form when modal opens (only once per open)
@@ -241,8 +257,12 @@ export function NewSessionModal({
   const browsePath = async (path?: string) => {
     setDirBrowseLoading(true);
     setDirBrowseError(null);
+    setShowNewFolder(false);
     try {
-      const url = path ? `/api/browse?path=${encodeURIComponent(path)}` : "/api/browse";
+      const params = new URLSearchParams();
+      if (path) params.set("path", path);
+      if (remote) params.set("remote", remote);
+      const url = `/api/browse?${params.toString()}`;
       const res = await fetch(url);
       const data = await res.json();
       if (data.error) {
@@ -259,9 +279,36 @@ export function NewSessionModal({
     }
   };
 
+  const handleCreateFolder = async () => {
+    if (!newFolderName.trim() || !dirBrowsePath) return;
+    setCreatingFolder(true);
+    try {
+      const fullPath = `${dirBrowsePath}/${newFolderName.trim()}`;
+      const res = await fetch("/api/mkdir", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: fullPath, ...(remote && { remote }) }),
+      });
+      const data = await res.json();
+      if (data.error) {
+        setDirBrowseError(data.error);
+      } else {
+        setNewFolderName("");
+        setShowNewFolder(false);
+        // Refresh and select the new folder
+        await browsePath(dirBrowsePath);
+        selectDirectory(fullPath);
+      }
+    } catch (e: any) {
+      setDirBrowseError(e.message);
+    } finally {
+      setCreatingFolder(false);
+    }
+  };
+
   const openDirPicker = () => {
     setShowDirPicker(true);
-    browsePath(cwd || launchCwd);
+    browsePath(remote ? "~" : (cwd || launchCwd));
   };
 
   const selectDirectory = (path: string) => {
@@ -305,7 +352,7 @@ export function NewSessionModal({
 
     try {
       const workingDir = cwd || (isReplacing ? existingSession?.cwd : null) || launchCwd;
-      saveRecentDir(workingDir);
+      saveRecentDir(workingDir, remote || undefined);
       const fullCommand = selectedAgent.command
         ? (commandArgs ? `${selectedAgent.command} ${commandArgs}` : selectedAgent.command)
         : commandArgs;
@@ -795,12 +842,41 @@ export function NewSessionModal({
                             </span>
                           </div>
                           <button
+                            onClick={() => { setShowNewFolder(!showNewFolder); setNewFolderName(""); }}
+                            className="p-1 rounded hover:bg-surface-active text-zinc-400 hover:text-white transition-colors flex-shrink-0 ml-1"
+                            title="New folder"
+                          >
+                            <FolderPlus className="w-4 h-4" />
+                          </button>
+                          <button
                             onClick={() => setShowDirPicker(false)}
-                            className="p-1 rounded hover:bg-surface-active text-zinc-500 hover:text-white transition-colors flex-shrink-0 ml-2"
+                            className="p-1 rounded hover:bg-surface-active text-zinc-500 hover:text-white transition-colors flex-shrink-0 ml-1"
                           >
                             <X className="w-4 h-4" />
                           </button>
                         </div>
+
+                        {/* New folder form */}
+                        {showNewFolder && (
+                          <div className="px-3 py-2 border-b border-border flex gap-2">
+                            <input
+                              type="text"
+                              value={newFolderName}
+                              onChange={(e) => setNewFolderName(e.target.value)}
+                              onKeyDown={(e) => e.key === "Enter" && handleCreateFolder()}
+                              placeholder="Folder name"
+                              autoFocus
+                              className="flex-1 px-2 py-1 rounded bg-surface border border-border text-white text-xs placeholder-zinc-600 focus:outline-none focus:border-zinc-500"
+                            />
+                            <button
+                              onClick={handleCreateFolder}
+                              disabled={!newFolderName.trim() || creatingFolder}
+                              className="px-2 py-1 rounded bg-orange-600 text-white text-xs font-medium hover:bg-orange-500 disabled:opacity-50 transition-colors"
+                            >
+                              {creatingFolder ? "..." : "Create"}
+                            </button>
+                          </div>
+                        )}
 
                         {/* Directory list */}
                         <div className="max-h-40 overflow-y-auto">

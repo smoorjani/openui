@@ -1,10 +1,12 @@
 import { Hono } from "hono";
 import type { Agent } from "../types";
-import { sessions, createSession, deleteSession, resumeSession, injectPluginDir, getRemoteHost, REMOTE_HOSTS } from "../services/sessionManager";
+import { sessions, createSession, deleteSession, resumeSession, injectPluginDir, getRemoteHost, sshExecAsync, REMOTE_HOSTS } from "../services/sessionManager";
 import { loadState, saveState, savePositions, getDataDir } from "../services/persistence";
 import {
   loadWorktreeConfig,
   saveWorktreeConfig,
+  loadSettings,
+  saveSettings,
 } from "../services/worktreeConfig";
 
 const LAUNCH_CWD = process.env.LAUNCH_CWD || process.cwd();
@@ -18,20 +20,54 @@ apiRoutes.get("/config", (c) => {
   return c.json({ launchCwd: LAUNCH_CWD, dataDir: getDataDir() });
 });
 
-// Browse directories for file picker
+// Browse directories for file picker (supports local and remote via SSH)
 apiRoutes.get("/browse", async (c) => {
-  const { readdirSync, statSync } = await import("fs");
+  const remote = c.req.query("remote");
+  let path = c.req.query("path") || (remote ? "~" : LAUNCH_CWD);
+
+  if (remote) {
+    // Remote browsing via SSH
+    try {
+      // Resolve ~ and get absolute path
+      // Use eval to allow ~ expansion, then cd to the result
+      const resolveResult = await sshExecAsync(remote, `cd ${path.includes(" ") ? `"${path}"` : path} 2>/dev/null && pwd`);
+      if (resolveResult.exitCode !== 0) {
+        return c.json({ error: `Cannot access ${path}`, current: path }, 400);
+      }
+      const resolvedPath = resolveResult.stdout.trim();
+
+      // List directories (exclude hidden)
+      const lsResult = await sshExecAsync(remote, `find "${resolvedPath}" -maxdepth 1 -mindepth 1 -type d ! -name '.*' | sort`);
+      const directories = lsResult.stdout.trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((fullPath: string) => ({
+          name: fullPath.split("/").pop() || fullPath,
+          path: fullPath,
+        }));
+
+      // Get parent
+      const parentResult = await sshExecAsync(remote, `dirname "${resolvedPath}"`);
+      const parentPath = parentResult.stdout.trim();
+
+      return c.json({
+        current: resolvedPath,
+        parent: parentPath !== resolvedPath ? parentPath : null,
+        directories,
+      });
+    } catch (e: any) {
+      return c.json({ error: e.message, current: path }, 400);
+    }
+  }
+
+  // Local browsing
+  const { readdirSync } = await import("fs");
   const { join, resolve } = await import("path");
   const { homedir } = await import("os");
 
-  let path = c.req.query("path") || LAUNCH_CWD;
-
-  // Handle ~ for home directory
   if (path.startsWith("~")) {
     path = path.replace("~", homedir());
   }
-
-  // Resolve to absolute path
   path = resolve(path);
 
   try {
@@ -44,7 +80,6 @@ apiRoutes.get("/browse", async (c) => {
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
 
-    // Get parent directory
     const parentPath = resolve(path, "..");
 
     return c.json({
@@ -54,6 +89,31 @@ apiRoutes.get("/browse", async (c) => {
     });
   } catch (e: any) {
     return c.json({ error: e.message, current: path }, 400);
+  }
+});
+
+// Create a directory (supports local and remote via SSH)
+apiRoutes.post("/mkdir", async (c) => {
+  const { path, remote } = await c.req.json();
+  if (!path) return c.json({ error: "path is required" }, 400);
+
+  try {
+    if (remote) {
+      const result = await sshExecAsync(remote, `mkdir -p "${path}"`);
+      if (result.exitCode !== 0) {
+        return c.json({ error: result.stderr || "Failed to create directory" }, 400);
+      }
+    } else {
+      const { mkdirSync } = await import("fs");
+      const { resolve } = await import("path");
+      const { homedir } = await import("os");
+      let resolved = path.startsWith("~") ? path.replace("~", homedir()) : path;
+      resolved = resolve(resolved);
+      mkdirSync(resolved, { recursive: true });
+    }
+    return c.json({ success: true });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 400);
   }
 });
 
@@ -418,6 +478,18 @@ apiRoutes.post("/worktree/config", async (c) => {
   }
 
   saveWorktreeConfig(worktreeRepos);
+  return c.json({ success: true });
+});
+
+// ============ Settings ============
+
+apiRoutes.get("/settings", (c) => {
+  return c.json(loadSettings());
+});
+
+apiRoutes.post("/settings", async (c) => {
+  const body = await c.req.json();
+  saveSettings(body);
   return c.json({ success: true });
 });
 

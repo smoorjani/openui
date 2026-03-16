@@ -5,6 +5,7 @@ import { join, basename } from "path";
 import { homedir } from "os";
 import type { Session } from "../types";
 import { loadBuffer } from "./persistence";
+import { loadSettings } from "./worktreeConfig";
 
 const DEFAULT_PERMISSIONS = [
   // Shell basics
@@ -313,7 +314,7 @@ function sshExec(remote: string, command: string): { exitCode: number; stdout: s
 }
 
 // Async SSH execution (non-blocking)
-async function sshExecAsync(remote: string, command: string): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+export async function sshExecAsync(remote: string, command: string): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   const host = getRemoteHost(remote);
   const proc = bunSpawn(["ssh", host, command], {
     stdout: "pipe",
@@ -572,6 +573,20 @@ function injectRemotePluginDir(command: string, agentId: string): string {
     log(`\x1b[38;5;141m[plugin]\x1b[0m Injecting remote plugin-dir: ${REMOTE_PLUGIN_PATH}`);
     log(`\x1b[38;5;141m[plugin]\x1b[0m Final command: ${finalCmd}`);
     return finalCmd;
+  }
+  return command;
+}
+
+// Inject --dangerously-skip-permissions if enabled in settings
+function injectSkipPermissions(command: string, agentId: string): string {
+  if (agentId !== "claude") return command;
+  if (command.includes("--dangerously-skip-permissions")) return command;
+  const settings = loadSettings();
+  if (!settings.skipPermissions) return command;
+  const parts = command.split(/\s+/);
+  if (parts[0] === "isaac") {
+    parts.splice(1, 0, "--dangerously-skip-permissions");
+    return parts.join(" ");
   }
   return command;
 }
@@ -996,7 +1011,8 @@ async function createWorktreeAndStartAgent(params: {
   setupPtyHandlers(session, sessionId, ptyProcess);
 
   // Run the agent command
-  const finalCommand = remote ? injectRemotePluginDir(command, agentId) : injectPluginDir(command, agentId);
+  let finalCommand = remote ? injectRemotePluginDir(command, agentId) : injectPluginDir(command, agentId);
+  finalCommand = injectSkipPermissions(finalCommand, agentId);
   log(`\x1b[38;5;82m[pty-write]\x1b[0m Writing command: ${finalCommand}`);
 
   if (remote) {
@@ -1402,7 +1418,8 @@ export function createSession(params: {
   setupPtyHandlers(session, sessionId, ptyProcess);
 
   // Run the command (inject plugin dir for both local and remote)
-  const finalCommand = remote ? injectRemotePluginDir(command, agentId) : injectPluginDir(command, agentId);
+  let finalCommand = remote ? injectRemotePluginDir(command, agentId) : injectPluginDir(command, agentId);
+  finalCommand = injectSkipPermissions(finalCommand, agentId);
   log(`\x1b[38;5;82m[pty-write]\x1b[0m Writing command: ${finalCommand}`);
 
   if (remote) {
@@ -1695,6 +1712,7 @@ export async function resumeSession(sessionId: string): Promise<boolean> {
     } else {
       cmd = injectPluginDir(cmd, session.agentId);
     }
+    cmd = injectSkipPermissions(cmd, session.agentId);
     return cmd;
   };
 
@@ -1834,6 +1852,7 @@ function retryWithNewPty(
         freshCmd = session.remote
           ? injectRemotePluginDir(freshCmd, session.agentId)
           : injectPluginDir(freshCmd, session.agentId);
+        freshCmd = injectSkipPermissions(freshCmd, session.agentId);
         retryWithNewPty(session, sessionId, freshCmd, () => 2); // No more retries
       }
     });

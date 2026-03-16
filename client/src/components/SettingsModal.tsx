@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, GitBranch, Plus, Trash2, Folder, ChevronRight, LayoutGrid, List } from "lucide-react";
+import { X, GitBranch, Plus, Trash2, Folder, ChevronRight, LayoutGrid, List, Shield } from "lucide-react";
 import { useStore } from "../stores/useStore";
 
 interface WorktreeRepo {
@@ -31,6 +31,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [browsePath, setBrowsePath] = useState("");
   const [browseDirectories, setBrowseDirectories] = useState<{ name: string; path: string }[]>([]);
   const [showBrowser, setShowBrowser] = useState(false);
+  const [skipPermissions, setSkipPermissions] = useState(false);
 
   // Load existing config
   useEffect(() => {
@@ -39,6 +40,12 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         .then((res) => res.json())
         .then((config) => {
           setWorktreeRepos(config.worktreeRepos || []);
+        })
+        .catch(console.error);
+      fetch("/api/settings")
+        .then((res) => res.json())
+        .then((settings) => {
+          setSkipPermissions(settings.skipPermissions ?? false);
         })
         .catch(console.error);
     } else {
@@ -190,6 +197,41 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                       <List className="w-5 h-5" />
                       <span className="text-xs font-medium">List</span>
                       <span className="text-[10px] text-zinc-500">Focused task view</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Skip Permissions */}
+                <div>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className="w-6 h-6 rounded bg-red-500/20 flex items-center justify-center">
+                        <Shield className="w-4 h-4 text-red-400" />
+                      </div>
+                      <div>
+                        <h3 className="text-sm font-medium text-white">Skip Permissions</h3>
+                        <p className="text-[10px] text-zinc-500">Append --dangerously-skip-permissions to isaac</p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => {
+                        const newValue = !skipPermissions;
+                        setSkipPermissions(newValue);
+                        fetch("/api/settings", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ skipPermissions: newValue }),
+                        }).catch(console.error);
+                      }}
+                      className={`relative w-10 h-5 rounded-full transition-colors ${
+                        skipPermissions ? "bg-red-600" : "bg-zinc-700"
+                      }`}
+                    >
+                      <div
+                        className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+                          skipPermissions ? "translate-x-5" : "translate-x-0.5"
+                        }`}
+                      />
                     </button>
                   </div>
                 </div>
