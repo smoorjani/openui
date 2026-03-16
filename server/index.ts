@@ -8,7 +8,8 @@ import { sessions, restoreSessions, getRemoteHost } from "./services/sessionMana
 import { saveState } from "./services/persistence";
 import type { WebSocketData } from "./types";
 
-const shellTerminals = new Map<string, { pty: ReturnType<typeof spawn>; clients: Set<ServerWebSocket<WebSocketData>> }>();
+const SHELL_BUFFER_MAX = 100;
+const shellTerminals = new Map<string, { pty: ReturnType<typeof spawn>; clients: Set<ServerWebSocket<WebSocketData>>; outputBuffer: string[] }>();
 
 const app = new Hono();
 const PORT = Number(process.env.PORT) || 6968;
@@ -83,10 +84,14 @@ Bun.serve<WebSocketData>({
             });
           }
 
-          shell = { pty: ptyProcess, clients: new Set() };
+          shell = { pty: ptyProcess, clients: new Set(), outputBuffer: [] };
           shellTerminals.set(sessionId, shell);
 
           ptyProcess.onData((data: string) => {
+            shell!.outputBuffer.push(data);
+            if (shell!.outputBuffer.length > SHELL_BUFFER_MAX) {
+              shell!.outputBuffer.shift();
+            }
             for (const client of shell!.clients) {
               if (client.readyState === 1) {
                 client.send(JSON.stringify({ type: "output", data }));
@@ -105,6 +110,12 @@ Bun.serve<WebSocketData>({
         }
 
         shell.clients.add(ws);
+
+        // Replay buffered output so reconnecting clients see history
+        if (shell.outputBuffer.length > 0) {
+          const history = shell.outputBuffer.join("");
+          ws.send(JSON.stringify({ type: "output", data: history }));
+        }
         return;
       }
 
