@@ -93,6 +93,12 @@ interface AppState {
   setNewSessionForNodeId: (nodeId: string | null) => void;
   worktreeModalOpen: boolean;
   setWorktreeModalOpen: (open: boolean) => void;
+
+  // Orchestrator
+  orchestratorSessionId: string | null;
+  orchestratorOpen: boolean;
+  setOrchestratorSessionId: (id: string | null) => void;
+  setOrchestratorOpen: (open: boolean) => void;
 }
 
 const DEFAULT_LIST_SECTIONS: ListSection[] = [
@@ -226,4 +232,17 @@ export const useStore = create<AppState>((set) => ({
   setNewSessionForNodeId: (nodeId) => set({ newSessionForNodeId: nodeId }),
   worktreeModalOpen: false,
   setWorktreeModalOpen: (open) => set({ worktreeModalOpen: open }),
+
+  // Orchestrator
+  orchestratorSessionId: localStorage.getItem("openui-orchestrator-session"),
+  orchestratorOpen: false,
+  setOrchestratorSessionId: (id) => {
+    if (id) {
+      localStorage.setItem("openui-orchestrator-session", id);
+    } else {
+      localStorage.removeItem("openui-orchestrator-session");
+    }
+    set({ orchestratorSessionId: id });
+  },
+  setOrchestratorOpen: (open) => set({ orchestratorOpen: open }),
 }));

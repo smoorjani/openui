@@ -445,48 +445,41 @@ function setupPtyHandlers(session: Session, sessionId: string, ptyProcess: Retur
 }
 
 // Schedule an initial prompt to be written to PTY once isaac is ready.
-// Uses two strategies:
-// 1. Poll session.status for "waiting_input" (set by plugin hook — most reliable)
-// 2. Fallback: send after 15s if plugin hook never fires
+// Waits for the plugin hook to report "waiting_input" (meaning isaac is at its prompt).
+// Polls for up to 60s, then gives up.
 function scheduleInitialPrompt(session: Session, sessionId: string, ptyProcess: ReturnType<typeof spawnPty>) {
   if (!session.initialPrompt) return;
 
   const prompt = session.initialPrompt;
   let sent = false;
+  let elapsed = 0;
 
-  const send = (reason: string) => {
-    if (sent) return;
-    sent = true;
-    session.initialPrompt = undefined;
-    log(`\x1b[38;5;82m[initial-prompt]\x1b[0m ${reason} — sending to ${sessionId}`);
-    // Small delay to let the UI fully render
-    setTimeout(() => {
-      if (session.pty === ptyProcess) {
-        ptyProcess.write(`${prompt}\r`);
-      }
-    }, 300);
-  };
-
-  // Strategy 1: Poll for plugin-reported waiting_input status
-  // The plugin hook sets session.status = "waiting_input" when isaac shows its prompt
   const pollInterval = setInterval(() => {
+    elapsed += 500;
+
     if (sent || !sessions.has(sessionId) || session.pty !== ptyProcess) {
       clearInterval(pollInterval);
       return;
     }
-    if (session.pluginReportedStatus && session.status === "waiting_input") {
+
+    if (elapsed > 60000) {
       clearInterval(pollInterval);
-      send("Plugin reported waiting_input");
+      log(`\x1b[38;5;196m[initial-prompt]\x1b[0m Gave up waiting for waiting_input on ${sessionId} after 60s`);
+      return;
+    }
+
+    if (session.pluginReportedStatus && session.status === "waiting_input") {
+      sent = true;
+      clearInterval(pollInterval);
+      session.initialPrompt = undefined;
+      log(`\x1b[38;5;82m[initial-prompt]\x1b[0m Plugin reported waiting_input — sending to ${sessionId}`);
+      setTimeout(() => {
+        if (session.pty === ptyProcess) {
+          ptyProcess.write(`${prompt}\r`);
+        }
+      }, 300);
     }
   }, 500);
-
-  // Strategy 2: Fallback timeout
-  setTimeout(() => {
-    clearInterval(pollInterval);
-    if (!sent && session.initialPrompt && session.pty === ptyProcess) {
-      send("Fallback timeout");
-    }
-  }, 15000);
 }
 
 // Get the OpenUI plugin directory path
@@ -589,6 +582,19 @@ function injectSkipPermissions(command: string, agentId: string): string {
     return parts.join(" ");
   }
   return command;
+}
+
+// Single source of truth for building the final command with all injections.
+// Order matters: plugin dirs first, then skip-permissions, then env var prefix (teams).
+function buildFinalCommand(command: string, session: { agentId: string; remote?: string; useTeam?: boolean }): string {
+  let cmd = session.remote
+    ? injectRemotePluginDir(command, session.agentId)
+    : injectPluginDir(command, session.agentId);
+  cmd = injectSkipPermissions(cmd, session.agentId);
+  if (session.useTeam && session.agentId === "claude") {
+    cmd = `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 ${cmd}`;
+  }
+  return cmd;
 }
 
 // Get git branch for a directory
@@ -1011,8 +1017,7 @@ async function createWorktreeAndStartAgent(params: {
   setupPtyHandlers(session, sessionId, ptyProcess);
 
   // Run the agent command
-  let finalCommand = remote ? injectRemotePluginDir(command, agentId) : injectPluginDir(command, agentId);
-  finalCommand = injectSkipPermissions(finalCommand, agentId);
+  const finalCommand = buildFinalCommand(command, session);
   log(`\x1b[38;5;82m[pty-write]\x1b[0m Writing command: ${finalCommand}`);
 
   if (remote) {
@@ -1243,6 +1248,7 @@ export function createSession(params: {
   remote?: string;
   initialPrompt?: string;
   categoryId?: string;
+  useTeam?: boolean;
 }): { session: Session; cwd: string; gitBranch?: string } {
   const {
     sessionId,
@@ -1261,6 +1267,7 @@ export function createSession(params: {
     remote,
     initialPrompt,
     categoryId,
+    useTeam,
   } = params;
 
   let workingDir = originalCwd;
@@ -1314,6 +1321,7 @@ export function createSession(params: {
       remote,
       initialPrompt,
       categoryId,
+      useTeam,
     };
 
     sessions.set(sessionId, session);
@@ -1339,6 +1347,20 @@ export function createSession(params: {
   }
 
   // --- Non-worktree path: spawn PTY immediately ---
+
+  // Create team directory if team mode is enabled
+  if (useTeam && customName) {
+    const teamSlug = customName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    const homeDir = remote ? `/home/${process.env.USER || "samraj.moorjani"}` : homedir();
+    const teamDir = join(homeDir, "teams", teamSlug);
+    if (remote) {
+      sshExecAsync(remote, `mkdir -p "${teamDir}"`).catch(() => {});
+    } else {
+      try { mkdirSync(teamDir, { recursive: true }); } catch {}
+    }
+    workingDir = teamDir;
+    log(`\x1b[38;5;141m[session]\x1b[0m Created team directory: ${teamDir}`);
+  }
 
   // For local sessions, detect the main repo from worktree
   if (!remote && !mainRepoPath) {
@@ -1412,14 +1434,14 @@ export function createSession(params: {
     remote,
     initialPrompt,
     categoryId,
+    useTeam,
   };
 
   sessions.set(sessionId, session);
   setupPtyHandlers(session, sessionId, ptyProcess);
 
-  // Run the command (inject plugin dir for both local and remote)
-  let finalCommand = remote ? injectRemotePluginDir(command, agentId) : injectPluginDir(command, agentId);
-  finalCommand = injectSkipPermissions(finalCommand, agentId);
+  // Run the command
+  const finalCommand = buildFinalCommand(command, session);
   log(`\x1b[38;5;82m[pty-write]\x1b[0m Writing command: ${finalCommand}`);
 
   if (remote) {
@@ -1706,13 +1728,8 @@ export async function resumeSession(sessionId: string): Promise<boolean> {
         cmd = cmd.replace("isaac", `isaac --plugin-dir ${dir}`);
       }
     }
-    // Also inject our openui status plugin
-    if (session.remote) {
-      cmd = injectRemotePluginDir(cmd, session.agentId);
-    } else {
-      cmd = injectPluginDir(cmd, session.agentId);
-    }
-    cmd = injectSkipPermissions(cmd, session.agentId);
+    // Apply all command injections
+    cmd = buildFinalCommand(cmd, session);
     return cmd;
   };
 
@@ -1848,11 +1865,8 @@ function retryWithNewPty(
             freshCmd += ` --plugin-dir ${m[1]}`;
           }
         }
-        // Inject our openui status plugin
-        freshCmd = session.remote
-          ? injectRemotePluginDir(freshCmd, session.agentId)
-          : injectPluginDir(freshCmd, session.agentId);
-        freshCmd = injectSkipPermissions(freshCmd, session.agentId);
+        // Apply all command injections
+        freshCmd = buildFinalCommand(freshCmd, session);
         retryWithNewPty(session, sessionId, freshCmd, () => 2); // No more retries
       }
     });

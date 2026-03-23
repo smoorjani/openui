@@ -42,6 +42,8 @@ export interface Session {
   remote?: string;
   // Auto-reconnect tracking for remote sessions
   reconnectAttempts?: number;
+  // Agent teams mode
+  useTeam?: boolean;
   // List view fields
   categoryId?: string;
   sortOrder?: number;
@@ -109,6 +111,7 @@ export interface Agent {
 export interface WebSocketData {
   sessionId: string;
   isShell?: boolean;
+  isUi?: boolean;
   cwd?: string;
   remote?: string; // Remote host for SSH-based shell terminals
 }

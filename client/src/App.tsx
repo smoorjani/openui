@@ -20,6 +20,7 @@ import { NewSessionModal } from "./components/NewSessionModal";
 import { Header } from "./components/Header";
 import { CanvasControls } from "./components/CanvasControls";
 import { ListView } from "./components/ListView/ListView";
+import { OrchestratorPanel } from "./components/OrchestratorPanel";
 
 const nodeTypes = {
   agent: AgentNode,
@@ -35,6 +36,30 @@ const PRESET_CATEGORIES = [
 const PRESET_CAT_WIDTH = 280;
 const PRESET_CAT_HEIGHT = 400;
 
+function findFreePosition(
+  targetX: number,
+  targetY: number,
+  existingNodes: { position?: { x: number; y: number } }[],
+): { x: number; y: number } {
+  const W = 200, H = 120, S = 24;
+  const valid = existingNodes.filter(
+    (n): n is { position: { x: number; y: number } } =>
+      !!n.position && typeof n.position.x === "number",
+  );
+  for (let r = 0; r <= 20; r++) {
+    for (let dx = -r; dx <= r; dx++) {
+      for (let dy = -r; dy <= r; dy++) {
+        if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
+        const x = targetX + dx * (W + S);
+        const y = targetY + dy * (H + S);
+        if (!valid.some((n) => Math.abs(x - n.position.x) < W + S && Math.abs(y - n.position.y) < H + S))
+          return { x, y };
+      }
+    }
+  }
+  return { x: targetX, y: targetY };
+}
+
 function AppContent() {
   const {
     nodes: storeNodes,
@@ -44,6 +69,7 @@ function AppContent() {
     setSelectedNodeId,
     setSidebarOpen,
     addSession,
+    addNode,
     updateSession,
     agents,
     addAgentModalOpen,
@@ -83,6 +109,62 @@ function AppContent() {
       .then((agents) => setAgents(agents))
       .catch(console.error);
   }, [setAgents, setLaunchCwd]);
+
+  // Global UI WebSocket for server-pushed UI actions (e.g. select-node from CLI)
+  useEffect(() => {
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const ws = new WebSocket(`${protocol}//${window.location.host}/ws/ui`);
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type === "ui-action" && msg.action === "select-node" && msg.nodeId) {
+          setSelectedNodeId(msg.nodeId);
+          setSidebarOpen(true);
+        } else if (msg.type === "session-created" && msg.nodeId && msg.sessionId) {
+          // A new session was created (e.g. via CLI or orchestrator) — add node if missing
+          const state = useStore.getState();
+          if (!state.sessions.has(msg.nodeId) && msg.nodeId !== "orchestrator") {
+            const agent = state.agents.find((a: any) => a.id === msg.agentId);
+            const existingNodes = state.nodes;
+            // Place node at a free position
+            const { x, y } = findFreePosition(400, 300, existingNodes);
+            addNode({
+              id: msg.nodeId,
+              type: "agent",
+              position: { x, y },
+              data: {
+                label: msg.agentName || agent?.name || "Agent",
+                agentId: msg.agentId,
+                color: msg.color || agent?.color || "#F97316",
+                icon: agent?.icon || "sparkles",
+                sessionId: msg.sessionId,
+              },
+            });
+            addSession(msg.nodeId, {
+              id: msg.nodeId,
+              sessionId: msg.sessionId,
+              agentId: msg.agentId,
+              agentName: msg.agentName || agent?.name || "Agent",
+              command: msg.command || "",
+              color: msg.color || agent?.color || "#F97316",
+              createdAt: new Date().toISOString(),
+              cwd: msg.cwd || "",
+              gitBranch: msg.gitBranch || undefined,
+              status: "idle",
+              remote: msg.remote || undefined,
+            });
+          }
+        }
+      } catch {}
+    };
+    ws.onclose = () => {
+      // Reconnect after a delay
+      setTimeout(() => {
+        // Component will re-mount or we rely on polling
+      }, 3000);
+    };
+    return () => ws.close();
+  }, [setSelectedNodeId, setSidebarOpen, addNode, addSession]);
 
   // Poll for status updates every second to catch any missed WebSocket messages
   useEffect(() => {
@@ -426,6 +508,8 @@ function AppContent() {
           <Sidebar />
         </div>
       )}
+
+      <OrchestratorPanel />
 
       <NewSessionModal
         open={addAgentModalOpen || newSessionModalOpen}

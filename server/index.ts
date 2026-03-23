@@ -3,10 +3,13 @@ import { cors } from "hono/cors";
 import { serveStatic } from "hono/bun";
 import type { ServerWebSocket } from "bun";
 import { spawn } from "bun-pty";
-import { apiRoutes } from "./routes/api";
+import { apiRoutes, setUiBroadcast } from "./routes/api";
 import { sessions, restoreSessions, getRemoteHost } from "./services/sessionManager";
 import { saveState } from "./services/persistence";
 import type { WebSocketData } from "./types";
+
+// Global set of all connected WebSocket clients for UI broadcasts
+const allClients = new Set<ServerWebSocket<WebSocketData>>();
 
 const SHELL_BUFFER_MAX = 100;
 const shellTerminals = new Map<string, { pty: ReturnType<typeof spawn>; clients: Set<ServerWebSocket<WebSocketData>>; outputBuffer: string[] }>();
@@ -21,6 +24,16 @@ app.use("*", cors());
 app.route("/api", apiRoutes);
 app.use("/*", serveStatic({ root: "./client/dist" }));
 
+// Wire up UI broadcast so API routes can send messages to all clients
+setUiBroadcast((msg: any) => {
+  const payload = JSON.stringify(msg);
+  for (const client of allClients) {
+    if (client.readyState === 1) {
+      client.send(payload);
+    }
+  }
+});
+
 Bun.serve<WebSocketData>({
   port: PORT,
   fetch(req, server) {
@@ -34,6 +47,12 @@ Bun.serve<WebSocketData>({
       if (!session) return new Response("Session not found", { status: 404 });
 
       const upgraded = server.upgrade(req, { data: { sessionId } });
+      if (upgraded) return undefined;
+      return new Response("WebSocket upgrade failed", { status: 400 });
+    }
+
+    if (url.pathname === "/ws/ui") {
+      const upgraded = server.upgrade(req, { data: { sessionId: "ui-global", isUi: true } });
       if (upgraded) return undefined;
       return new Response("WebSocket upgrade failed", { status: 400 });
     }
@@ -55,6 +74,12 @@ Bun.serve<WebSocketData>({
   websocket: {
     open(ws) {
       const { sessionId, isShell, cwd, remote } = ws.data;
+      allClients.add(ws);
+
+      if (ws.data.isUi) {
+        log(`\x1b[38;5;245m[ws]\x1b[0m UI client connected`);
+        return;
+      }
 
       if (isShell) {
         log(`\x1b[38;5;245m[ws]\x1b[0m Shell connected: ${sessionId}${remote ? ` (remote: ${remote})` : ""}`);
@@ -148,6 +173,8 @@ Bun.serve<WebSocketData>({
     },
     message(ws, message) {
       const { sessionId, isShell } = ws.data;
+
+      if (ws.data.isUi) return; // UI clients don't send actionable messages
 
       if (isShell) {
         const shell = shellTerminals.get(sessionId);
@@ -245,6 +272,12 @@ Bun.serve<WebSocketData>({
     },
     close(ws) {
       const { sessionId, isShell } = ws.data;
+      allClients.delete(ws);
+
+      if (ws.data.isUi) {
+        log(`\x1b[38;5;245m[ws]\x1b[0m UI client disconnected`);
+        return;
+      }
 
       if (isShell) {
         const shell = shellTerminals.get(sessionId);

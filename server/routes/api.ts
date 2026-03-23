@@ -14,6 +14,12 @@ const QUIET = !!process.env.OPENUI_QUIET;
 const log = QUIET ? () => {} : console.log.bind(console);
 const logError = QUIET ? () => {} : console.error.bind(console);
 
+// UI broadcast function — set by index.ts after server starts
+let uiBroadcast: ((msg: any) => void) | null = null;
+export function setUiBroadcast(fn: (msg: any) => void) {
+  uiBroadcast = fn;
+}
+
 export const apiRoutes = new Hono();
 
 apiRoutes.get("/config", (c) => {
@@ -219,6 +225,7 @@ apiRoutes.post("/sessions", async (c) => {
     remote,
     initialPrompt,
     categoryId,
+    useTeam,
   } = body;
 
   const sessionId = `session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -229,6 +236,7 @@ apiRoutes.post("/sessions", async (c) => {
     agentId,
     agentName,
     command,
+    useTeam: !!useTeam,
     cwd: workingDir,
     nodeId,
     customName,
@@ -244,6 +252,23 @@ apiRoutes.post("/sessions", async (c) => {
   });
 
   saveState(sessions);
+
+  // Broadcast to UI so other tabs / polling can pick up the new node
+  if (uiBroadcast) {
+    uiBroadcast({
+      type: "session-created",
+      sessionId,
+      nodeId,
+      agentId,
+      agentName: customName || agentName,
+      command,
+      cwd: result.cwd,
+      gitBranch: result.gitBranch,
+      remote,
+      color: body.color,
+    });
+  }
+
   return c.json({
     sessionId,
     nodeId,
@@ -457,6 +482,33 @@ apiRoutes.delete("/categories/:categoryId", (c) => {
   const DATA_DIR = join(process.env.LAUNCH_CWD || process.cwd(), ".openui");
   writeFileSync(join(DATA_DIR, "state.json"), JSON.stringify(state, null, 2));
 
+  return c.json({ success: true });
+});
+
+// ============ Write to session terminal ============
+
+apiRoutes.post("/sessions/:sessionId/write", async (c) => {
+  const sessionId = c.req.param("sessionId");
+  const session = sessions.get(sessionId);
+  if (!session) return c.json({ error: "Session not found" }, 404);
+  if (!session.pty) return c.json({ error: "Session has no active PTY" }, 400);
+
+  const { message } = await c.req.json();
+  if (!message) return c.json({ error: "message is required" }, 400);
+
+  session.pty.write(message + "\n");
+  return c.json({ success: true });
+});
+
+// ============ UI Actions ============
+
+apiRoutes.post("/ui/select-node", async (c) => {
+  const { nodeId } = await c.req.json();
+  if (!nodeId) return c.json({ error: "nodeId is required" }, 400);
+
+  if (uiBroadcast) {
+    uiBroadcast({ type: "ui-action", action: "select-node", nodeId });
+  }
   return c.json({ success: true });
 });
 
