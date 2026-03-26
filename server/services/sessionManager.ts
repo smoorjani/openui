@@ -283,12 +283,29 @@ const log = QUIET ? () => {} : console.log.bind(console);
 const logError = QUIET ? () => {} : console.error.bind(console);
 
 // Remote host mappings for SSH-based sessions
-export const REMOTE_HOSTS: Record<string, string> = {
+// Default hosts; overridden by remoteHosts in .openui/config.json
+const DEFAULT_REMOTE_HOSTS: Record<string, string> = {
   "arca": "arca.ssh",
 };
 
+export function getRemoteHosts(): Record<string, string> {
+  const settings = loadSettings();
+  return settings.remoteHosts ?? DEFAULT_REMOTE_HOSTS;
+}
+
+// Kept for backwards compat with api.ts import
+export const REMOTE_HOSTS = new Proxy({} as Record<string, string>, {
+  get(_target, prop) { return getRemoteHosts()[prop as string]; },
+  ownKeys() { return Object.keys(getRemoteHosts()); },
+  getOwnPropertyDescriptor(_target, prop) {
+    const hosts = getRemoteHosts();
+    if (prop in hosts) return { configurable: true, enumerable: true, value: hosts[prop as string] };
+    return undefined;
+  },
+});
+
 export function getRemoteHost(remote: string): string {
-  return REMOTE_HOSTS[remote] || remote;
+  return getRemoteHosts()[remote] || remote;
 }
 
 // Port for the SSH reverse tunnel (remote → local). Use a high port to avoid
@@ -1270,7 +1287,7 @@ export function createSession(params: {
     useTeam,
   } = params;
 
-  let workingDir = originalCwd;
+  let workingDir = originalCwd.startsWith("~/") ? join(homedir(), originalCwd.slice(2)) : originalCwd === "~" ? homedir() : originalCwd;
   let worktreePath: string | undefined;
   let mainRepoPath: string | undefined;
   let gitBranch: string | null = null;
@@ -1351,7 +1368,8 @@ export function createSession(params: {
   // Create team directory if team mode is enabled
   if (useTeam && customName) {
     const teamSlug = customName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-    const homeDir = remote ? `/home/${process.env.USER || "samraj.moorjani"}` : homedir();
+    const settings = loadSettings();
+    const homeDir = remote ? (settings.defaultRemoteCwd || `/home/${process.env.USER || "user"}`) : (settings.defaultCwd || homedir());
     const teamDir = join(homeDir, "teams", teamSlug);
     if (remote) {
       sshExecAsync(remote, `mkdir -p "${teamDir}"`).catch(() => {});

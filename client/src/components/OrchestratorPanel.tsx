@@ -60,7 +60,7 @@ export function OrchestratorPanel() {
         agentId: "claude",
         agentName: "Claude Code",
         command: "isaac",
-        cwd: launchCwd || "/Users/samraj.moorjani",
+        cwd: launchCwd || "~",
         nodeId: "orchestrator",
         customName: "Orchestrator",
         initialPrompt:
