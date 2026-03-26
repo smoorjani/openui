@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Agent } from "../types";
-import { sessions, createSession, deleteSession, resumeSession, injectPluginDir, getRemoteHost, sshExecAsync, REMOTE_HOSTS } from "../services/sessionManager";
+import { sessions, createSession, deleteSession, resumeSession, injectPluginDir, getRemoteHost, sshExecAsync, getRemoteHosts } from "../services/sessionManager";
 import { loadState, saveState, savePositions, getDataDir } from "../services/persistence";
 import {
   loadWorktreeConfig,
@@ -138,7 +138,7 @@ apiRoutes.get("/agents", (c) => {
 });
 
 apiRoutes.get("/remotes", (c) => {
-  return c.json(Object.keys(REMOTE_HOSTS));
+  return c.json(Object.keys(getRemoteHosts()));
 });
 
 apiRoutes.get("/sessions", (c) => {

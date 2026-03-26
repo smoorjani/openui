@@ -69,8 +69,8 @@ function findFreePosition(
   return { x: startX, y: startY };
 }
 
-const DEFAULT_CWD = "/Users/samraj.moorjani";
-const DEFAULT_REMOTE_CWD = "/home/samraj.moorjani";
+const FALLBACK_CWD = "~";
+const FALLBACK_REMOTE_CWD = "~";
 const MAX_RECENT_DIRS = 5;
 
 const recentDirsKey = (host?: string) =>
@@ -131,6 +131,10 @@ export function NewSessionModal({
   const [remoteHosts, setRemoteHosts] = useState<string[]>([]);
   const [remote, setRemote] = useState<string>("");
 
+  // User-configurable defaults from .openui/config.json
+  const [defaultCwd, setDefaultCwd] = useState(FALLBACK_CWD);
+  const [defaultRemoteCwd, setDefaultRemoteCwd] = useState(FALLBACK_REMOTE_CWD);
+
   // Recent directories
   const [recentDirs, setRecentDirs] = useState<string[]>([]);
 
@@ -139,14 +143,28 @@ export function NewSessionModal({
   // Update cwd, recent dirs, and close dir picker when remote changes
   useEffect(() => {
     setShowDirPicker(false);
-    setCwd(remote ? DEFAULT_REMOTE_CWD : DEFAULT_CWD);
+    setCwd(remote ? defaultRemoteCwd : defaultCwd);
     setRecentDirs(loadRecentDirs(remote || undefined));
-  }, [remote]);
+  }, [remote, defaultCwd, defaultRemoteCwd]);
 
   // Reset form when modal opens
   useEffect(() => {
     if (open && !initialized) {
       const claudeAgent = agents.find((a) => a.id === "claude");
+
+      // Fetch user settings (defaultCwd, defaultRemoteCwd) from config
+      fetch("/api/settings")
+        .then((r) => r.json())
+        .then((settings) => {
+          const localCwd = settings.defaultCwd || FALLBACK_CWD;
+          const remoteCwd = settings.defaultRemoteCwd || FALLBACK_REMOTE_CWD;
+          setDefaultCwd(localCwd);
+          setDefaultRemoteCwd(remoteCwd);
+          if (!existingSession) {
+            setCwd(localCwd);
+          }
+        })
+        .catch(() => {});
 
       if (existingSession) {
         const agent = agents.find((a) => a.id === existingSession.agentId);
@@ -156,7 +174,7 @@ export function NewSessionModal({
         setCommandArgs("");
       } else {
         setSelectedAgent(claudeAgent || null);
-        setCwd(DEFAULT_CWD);
+        setCwd(defaultCwd);
         setCustomName("");
         setCommandArgs("");
       }
@@ -228,7 +246,7 @@ export function NewSessionModal({
 
   const openDirPicker = () => {
     setShowDirPicker(true);
-    browsePath(remote ? DEFAULT_REMOTE_CWD : cwd || launchCwd);
+    browsePath(remote ? defaultRemoteCwd : cwd || launchCwd);
   };
 
   const selectDirectory = (path: string) => {
@@ -249,7 +267,7 @@ export function NewSessionModal({
       // Create team directory if team mode is enabled
       if (useTeam && customName.trim()) {
         const teamSlug = customName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-        const homeDir = remote ? DEFAULT_REMOTE_CWD : DEFAULT_CWD;
+        const homeDir = remote ? defaultRemoteCwd : defaultCwd;
         const teamDir = `${homeDir}/teams/${teamSlug}`;
         await fetch("/api/mkdir", {
           method: "POST",

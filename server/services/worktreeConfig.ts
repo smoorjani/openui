@@ -6,33 +6,7 @@ const LAUNCH_CWD = process.env.LAUNCH_CWD || process.cwd();
 const CONFIG_FILE = join(LAUNCH_CWD, ".openui", "config.json");
 
 const DEFAULT_WORKTREE_CONFIG: WorktreeConfig = {
-  worktreeRepos: [
-    {
-      name: "MLflow",
-      path: "/Users/samraj.moorjani/personal_repos/mlflow",
-      baseBranch: "master"
-    },
-    {
-      name: "Universe",
-      path: "/Users/samraj.moorjani/universe",
-      baseBranch: "main",
-      sparseCheckout: true,
-      sparseCheckoutPaths: ["docs", "managed-evals", "managed-rag", "rag", "mlflow", "experimental"]
-    },
-    {
-      name: "Universe (Arca)",
-      path: "~/universe",
-      baseBranch: "main",
-      sparseCheckout: true,
-      sparseCheckoutPaths: ["docs", "managed-evals", "managed-rag", "rag", "mlflow", "experimental"],
-      remote: "arca"
-    },
-    {
-      name: "MLflow Website",
-      path: "/Users/samraj.moorjani/personal_repos/mlflow-website",
-      baseBranch: "main"
-    }
-  ]
+  worktreeRepos: []
 };
 
 export function loadWorktreeConfig(): WorktreeConfig {
@@ -51,13 +25,23 @@ export function loadWorktreeConfig(): WorktreeConfig {
 
 export interface AppSettings {
   skipPermissions?: boolean;
+  defaultCwd?: string;
+  defaultRemoteCwd?: string;
+  remoteHosts?: Record<string, string>;
+  worktreeRepos?: WorktreeRepo[];
 }
 
 export function loadSettings(): AppSettings {
   try {
     if (existsSync(CONFIG_FILE)) {
       const fileConfig = JSON.parse(readFileSync(CONFIG_FILE, "utf-8"));
-      return { skipPermissions: fileConfig.skipPermissions ?? false };
+      return {
+        skipPermissions: fileConfig.skipPermissions ?? false,
+        defaultCwd: fileConfig.defaultCwd,
+        defaultRemoteCwd: fileConfig.defaultRemoteCwd,
+        remoteHosts: fileConfig.remoteHosts,
+        worktreeRepos: fileConfig.worktreeRepos,
+      };
     }
   } catch (e) {
     console.error("Failed to load settings:", e);
