@@ -1,6 +1,10 @@
 # Dependencies
 node_modules/
 **/node_modules/
+bun.lockb
+**/bun.lockb
+bun.lock
+**/bun.lock
 
 # Build outputs
 dist/

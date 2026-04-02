@@ -1,11 +1,12 @@
 import { spawnSync, spawn as bunSpawn } from "bun";
 import { spawn as spawnPty } from "bun-pty";
-import { existsSync, mkdirSync, copyFileSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, readdirSync } from "fs";
 import { join, basename } from "path";
 import { homedir } from "os";
 import type { Session } from "../types";
 import { loadBuffer } from "./persistence";
 import { loadSettings } from "./worktreeConfig";
+import { enqueueSessionStart, signalSessionReady } from "./sessionStartQueue";
 
 const DEFAULT_PERMISSIONS = [
   // Shell basics
@@ -282,6 +283,11 @@ const QUIET = !!process.env.OPENUI_QUIET;
 const log = QUIET ? () => {} : console.log.bind(console);
 const logError = QUIET ? () => {} : console.error.bind(console);
 
+// Detect available CLI at startup
+const HAS_ISAAC = spawnSync(["which", "isaac"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
+export const DEFAULT_CLAUDE_COMMAND = HAS_ISAAC ? "isaac" : "llm agent claude";
+log(`\x1b[38;5;141m[cli]\x1b[0m Detected CLI: ${DEFAULT_CLAUDE_COMMAND} (isaac ${HAS_ISAAC ? "found" : "not found"})`);
+
 // Remote host mappings for SSH-based sessions
 export const REMOTE_HOSTS: Record<string, string> = {
   "arca": "arca.ssh",
@@ -295,6 +301,123 @@ export function getRemoteHost(remote: string): string {
 // conflicts with other services on shared remote machines like Arca.
 const TUNNEL_PORT = 46968;
 const SERVER_PORT = parseInt(process.env.PORT || "6968", 10);
+const MAX_BUFFER_SIZE = 5000;
+
+// Find the git-capable directory for a given path.
+export function findGitCwd(cwd: string): string | null {
+  const hasGitEntry = (dir: string) => existsSync(join(dir, ".git"));
+  if (hasGitEntry(cwd)) return cwd;
+  const check = spawnSync(["git", "rev-parse", "--show-toplevel"], {
+    cwd, stdout: "pipe", stderr: "pipe",
+  });
+  if (check.exitCode === 0) return cwd;
+  try {
+    const entries = readdirSync(cwd, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const sub = join(cwd, entry.name);
+      if (!hasGitEntry(sub)) continue;
+      const result = spawnSync(["git", "rev-parse", "--show-toplevel"], {
+        cwd: sub, stdout: "pipe", stderr: "pipe",
+      });
+      if (result.exitCode === 0) return sub;
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
+// Async git spawn helper
+function gitSpawnAsync(args: string[], cwd: string): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    const proc = bunSpawn(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+    const chunks: Buffer[] = [];
+    const errChunks: Buffer[] = [];
+    proc.stdout?.on("data", (d: Buffer) => chunks.push(d));
+    proc.stderr?.on("data", (d: Buffer) => errChunks.push(d));
+    proc.on("exit", (code: number) => {
+      resolve({
+        exitCode: code ?? 1,
+        stdout: Buffer.concat(chunks).toString(),
+        stderr: Buffer.concat(errChunks).toString(),
+      });
+    });
+  });
+}
+
+// Create a git worktree for a branch
+export async function createWorktreeForBranch(cwd: string, branchName: string, baseBranch?: string): Promise<string | null> {
+  try {
+    const sanitizedBranch = branchName.replace(/\//g, "-");
+    const topResult = spawnSync(["git", "rev-parse", "--show-toplevel"], {
+      cwd, stdout: "pipe", stderr: "pipe",
+    });
+    let gitCwd: string;
+    let worktreePath: string;
+    if (topResult.exitCode === 0) {
+      const repoRoot = topResult.stdout.toString().trim();
+      const repoName = repoRoot.split("/").pop() || "repo";
+      worktreePath = join(repoRoot, "..", `${repoName}-worktrees`, sanitizedBranch);
+      gitCwd = cwd;
+    } else {
+      worktreePath = join(cwd, sanitizedBranch);
+      const found = findGitCwd(cwd);
+      if (!found) { log(`[git] No git repo found in ${cwd}`); return null; }
+      gitCwd = found;
+    }
+    if (existsSync(worktreePath)) { log(`[git] Worktree already exists at ${worktreePath}`); return worktreePath; }
+    const branchExists = spawnSync(["git", "rev-parse", "--verify", branchName], {
+      cwd: gitCwd, stdout: "pipe", stderr: "pipe",
+    }).exitCode === 0;
+    if (branchExists) {
+      const result = await gitSpawnAsync(["worktree", "add", worktreePath, branchName], gitCwd);
+      if (result.exitCode !== 0) { log(`[git] Worktree add failed: ${result.stderr}`); return null; }
+    } else {
+      let base = baseBranch || "HEAD";
+      if (baseBranch) {
+        const fetchResult = await gitSpawnAsync(["fetch", "origin", baseBranch], gitCwd);
+        if (fetchResult.exitCode === 0) base = `origin/${baseBranch}`;
+      }
+      const result = await gitSpawnAsync(["worktree", "add", "-b", branchName, worktreePath, base], gitCwd);
+      if (result.exitCode !== 0) { log(`[git] Worktree add -b failed: ${result.stderr}`); return null; }
+    }
+    return worktreePath;
+  } catch (e) { log(`[git] Worktree creation error: ${e}`); return null; }
+}
+
+// Create a shell session (raw terminal, no agent)
+export function createShellSession(cwd: string, nodeId: string): { shellId: string; session: Session } {
+  const shellId = `shell-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const userShell = process.env.SHELL || "/bin/bash";
+  const session: Session = {
+    pty: null as any,
+    agentId: "shell",
+    agentName: "Shell",
+    command: "",
+    cwd,
+    createdAt: new Date().toISOString(),
+    clients: new Set(),
+    outputBuffer: [],
+    outputSeq: 0,
+    status: "idle",
+    lastOutputTime: Date.now(),
+    lastInputTime: 0,
+    recentOutputSize: 0,
+    nodeId,
+    isRestored: false,
+  };
+  const ptyProcess = spawnPty(userShell, [], {
+    name: "xterm-256color",
+    cwd,
+    env: { ...process.env, TERM: "xterm-256color" },
+    rows: 30,
+    cols: 120,
+  });
+  session.pty = ptyProcess;
+  attachOutputHandler(session, ptyProcess);
+  sessions.set(shellId, session);
+  log(`[shell] Created shell ${shellId} at ${cwd}`);
+  return { shellId, session };
+}
 
 function sshArgs(host: string, remoteCommand: string): string[] {
   return ["-t", "-R", `${TUNNEL_PORT}:localhost:${SERVER_PORT}`, "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", host, remoteCommand];
@@ -343,14 +466,89 @@ async function execAsync(cmd: string[], cwd?: string): Promise<{ exitCode: numbe
   return { exitCode, stdout, stderr };
 }
 
-// Broadcast a message to all connected WebSocket clients of a session
-function broadcastToSession(session: Session, message: Record<string, unknown>) {
-  const payload = JSON.stringify(message);
+/** Broadcast a message to all WebSocket clients of a session, with try-catch per client */
+export function broadcastToSession(session: Session, message: object) {
+  // Auto-attach outputSeq to output messages so clients can track position
+  const msg = (message as any).type === "output" ? { ...message, seq: session.outputSeq } : message;
+  const json = JSON.stringify(msg);
   for (const client of session.clients) {
-    if (client.readyState === 1) {
-      client.send(payload);
+    try {
+      if (client.readyState === 1) {
+        client.send(json);
+      }
+    } catch {
+      session.clients.delete(client);
     }
   }
+}
+
+/** Attach the standard PTY output handler to a session */
+export function attachOutputHandler(session: Session, ptyProcess: any): void {
+  // Small tail buffer for detecting patterns that span chunk boundaries.
+  // We keep the last 128 chars and prepend them to each new chunk for matching.
+  let tailBuf = "";
+
+  // Output batching: buffer PTY chunks for up to 16ms before broadcasting.
+  // Claude Code's TUI sends clear-screen + redraw as consecutive chunks within
+  // a few ms of each other. Batching combines them into one WebSocket message
+  // so xterm processes the full redraw in a single pass, eliminating the
+  // intermediate render flashes caused by multi-chunk TUI redraws.
+  let batchBuf = "";
+  let batchTimer: ReturnType<typeof setTimeout> | null = null;
+  const flushBatch = () => {
+    if (batchBuf) {
+      broadcastToSession(session, { type: "output", data: batchBuf });
+      batchBuf = "";
+    }
+    batchTimer = null;
+  };
+
+  ptyProcess.onData((data: string) => {
+    session.outputBuffer.push(data);
+    session.outputSeq++;
+    if (session.outputBuffer.length > MAX_BUFFER_SIZE) session.outputBuffer.shift();
+    session.lastOutputTime = Date.now();
+    session.recentOutputSize += data.length;
+
+    batchBuf += data;
+    if (batchTimer) clearTimeout(batchTimer);
+    batchTimer = setTimeout(flushBatch, 16);
+
+    // Combine tail of previous chunk(s) with current chunk for cross-boundary matching
+    const combined = tailBuf + data;
+    // Keep last 128 chars for next iteration
+    tailBuf = combined.length > 128 ? combined.slice(-128) : combined;
+
+    // Inline model detection on the combined window
+    const hasSetModel = combined.includes("Set model") || combined.includes("Set\x1b");
+    const hasBanner = !session.model && combined.includes("█");
+
+    if (hasSetModel || hasBanner) {
+      const clean = combined.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "")
+                            .replace(/\x1b\[\?[0-9;]*[a-zA-Z]/g, "")
+                            .replace(/\x1b\][^\x07]*\x07/g, "");
+
+      if (hasSetModel) {
+        // /model change: always authoritative
+        const m = clean.match(/Set model to\s*(Opus|Sonnet|Haiku)\s*(\d+)\.(\d+)\s*(?:\((\d+[MKmk])\s*context\))?/i);
+        if (m) {
+          const family = m[1].toLowerCase();
+          const base = `claude-${family}-${m[2]}-${m[3]}`;
+          session.model = m[4] ? `${base}[${m[4].toLowerCase()}]` : base;
+          log(`\x1b[38;5;141m[model]\x1b[0m ${session.nodeId}: model changed to ${session.model}`);
+        }
+      } else if (hasBanner) {
+        // Startup banner: only for initial detection
+        const m = clean.match(/█+▛▘\s*(Opus|Sonnet|Haiku)\s*(\d+)\.(\d+)\s*(?:\((\d+[MKmk])\s*context\))?/i);
+        if (m) {
+          const family = m[1].toLowerCase();
+          const base = `claude-${family}-${m[2]}-${m[3]}`;
+          session.model = m[4] ? `${base}[${m[4].toLowerCase()}]` : base;
+          log(`\x1b[38;5;141m[model]\x1b[0m ${session.nodeId}: detected ${session.model} from banner`);
+        }
+      }
+    }
+  });
 }
 
 // Set up PTY output handlers for a session
@@ -363,20 +561,7 @@ function setupPtyHandlers(session: Session, sessionId: string, ptyProcess: Retur
     session.recentOutputSize = Math.max(0, session.recentOutputSize - 50);
   }, 500);
 
-  ptyProcess.onData((data: string) => {
-    session.outputBuffer.push(data);
-    if (session.outputBuffer.length > MAX_BUFFER_SIZE) {
-      session.outputBuffer.shift();
-    }
-    session.lastOutputTime = Date.now();
-    session.recentOutputSize += data.length;
-
-    for (const client of session.clients) {
-      if (client.readyState === 1) {
-        client.send(JSON.stringify({ type: "output", data }));
-      }
-    }
-  });
+  attachOutputHandler(session, ptyProcess);
 
   ptyProcess.onExit(() => {
     if (!sessions.has(sessionId)) return;
@@ -598,7 +783,7 @@ function buildFinalCommand(command: string, session: { agentId: string; remote?:
 }
 
 // Get git branch for a directory
-function getGitBranch(cwd: string): string | null {
+export function getGitBranch(cwd: string): string | null {
   try {
     const result = spawnSync(["git", "rev-parse", "--abbrev-ref", "HEAD"], {
       cwd,
@@ -1227,8 +1412,6 @@ async function createLocalWorktreeSteps(params: {
   return true;
 }
 
-const MAX_BUFFER_SIZE = 1000;
-
 export const sessions = new Map<string, Session>();
 
 export function createSession(params: {
@@ -1249,6 +1432,13 @@ export function createSession(params: {
   initialPrompt?: string;
   categoryId?: string;
   useTeam?: boolean;
+  teamName?: string;
+  // Ticket support
+  ticketId?: string;
+  ticketTitle?: string;
+  ticketUrl?: string;
+  prNumber?: string;
+  ticketPromptTemplate?: string;
 }): { session: Session; cwd: string; gitBranch?: string } {
   const {
     sessionId,
@@ -1268,6 +1458,12 @@ export function createSession(params: {
     initialPrompt,
     categoryId,
     useTeam,
+    teamName,
+    ticketId,
+    ticketTitle,
+    ticketUrl,
+    prNumber,
+    ticketPromptTemplate,
   } = params;
 
   let workingDir = originalCwd;
@@ -1309,6 +1505,7 @@ export function createSession(params: {
       createdAt: new Date().toISOString(),
       clients: new Set(),
       outputBuffer: [],
+      outputSeq: 0,
       status: "creating",
       creationProgress: "Initializing...",
       lastOutputTime: now,
@@ -1322,6 +1519,9 @@ export function createSession(params: {
       initialPrompt,
       categoryId,
       useTeam,
+      ticketId,
+      ticketTitle,
+      ticketUrl,
     };
 
     sessions.set(sessionId, session);
@@ -1423,6 +1623,7 @@ export function createSession(params: {
     createdAt: new Date().toISOString(),
     clients: new Set(),
     outputBuffer: [],
+    outputSeq: 0,
     status: "waiting_input",
     lastOutputTime: now,
     lastInputTime: 0,
@@ -1435,6 +1636,9 @@ export function createSession(params: {
     initialPrompt,
     categoryId,
     useTeam,
+    ticketId,
+    ticketTitle,
+    ticketUrl,
   };
 
   sessions.set(sessionId, session);
@@ -1469,13 +1673,26 @@ export function createSession(params: {
   } else {
     setTimeout(() => {
       ptyProcess.write(`${finalCommand}\r`);
+
+      // If there's a ticket URL, send it to the agent after a delay
+      if (ticketUrl) {
+        setTimeout(() => {
+          const defaultTemplate = "Here is the ticket for this session: {{url}}\n\nPlease use the appropriate MCP tool or fetch the URL to read the full ticket details before starting work.";
+          const template = ticketPromptTemplate || defaultTemplate;
+          const ticketPrompt = template
+            .replace(/\{\{url\}\}/g, ticketUrl)
+            .replace(/\{\{id\}\}/g, ticketId || "")
+            .replace(/\{\{title\}\}/g, ticketTitle || "");
+          ptyProcess.write(ticketPrompt + "\r");
+        }, 2000);
+      }
     }, 300);
   }
 
   // Send initial prompt after isaac is ready
   scheduleInitialPrompt(session, sessionId, ptyProcess);
 
-  log(`\x1b[38;5;141m[session]\x1b[0m Created ${sessionId} for ${agentName}${remote ? ` on ${remote}` : ""}`);
+  log(`\x1b[38;5;141m[session]\x1b[0m Created ${sessionId} for ${agentName}${ticketId ? ` (ticket: ${ticketId})` : ""}${remote ? ` on ${remote}` : ""}`);
   return { session, cwd: workingDir, gitBranch: gitBranch || undefined };
 }
 
@@ -1579,6 +1796,27 @@ export function restoreSessions() {
   const sessionIds: string[] = [];
 
   for (const node of state.nodes) {
+    // Skip archived sessions - they should not be in the active sessions Map
+    if (node.archived) {
+      log(`[restore] Skipping archived session: ${node.sessionId} (${node.customName})`);
+      continue;
+    }
+
+    // Skip shell sessions — they're ephemeral and should not be persisted/restored
+    if (node.agentId === "shell") {
+      log(`[restore] Skipping shell session: ${node.sessionId}`);
+      continue;
+    }
+
+    // Migrate command format when isaac is available
+    if (HAS_ISAAC && node.command.startsWith("llm agent claude")) {
+      const oldCommand = node.command;
+      node.command = node.command.replace("llm agent claude", "isaac");
+      log(`\x1b[38;5;141m[restore]\x1b[0m Migrated command for ${node.sessionId}: ${oldCommand} -> ${node.command}`);
+    }
+
+    console.log(`[restore] Loading session: ${node.sessionId} (${node.customName}) archived=${node.archived}`);
+
     const buffer = loadBuffer(node.sessionId);
     // Only detect git branch locally; skip for remote sessions
     const gitBranch = node.remote ? null : getGitBranch(node.cwd);
@@ -1589,12 +1827,13 @@ export function restoreSessions() {
       agentName: node.agentName,
       command: node.command,
       cwd: node.cwd,
-      originalCwd: node.originalCwd,
+      originalCwd: node.originalCwd || node.cwd, // Backward compat: fall back to cwd
       worktreePath: node.worktreePath,
-      gitBranch: gitBranch || undefined,
+      gitBranch: gitBranch || node.gitBranch || undefined,
       createdAt: node.createdAt,
       clients: new Set(),
       outputBuffer: buffer,
+      outputSeq: 0,
       status: "disconnected",
       lastOutputTime: 0,
       lastInputTime: 0,
@@ -1604,16 +1843,31 @@ export function restoreSessions() {
       notes: node.notes,
       nodeId: node.nodeId,
       isRestored: true,
+      autoResumed: node.autoResumed || false,
       claudeSessionId: node.claudeSessionId,
+      claudeSessionHistory: node.claudeSessionHistory,
+      archived: false,
+      canvasId: node.canvasId,
+      ticketId: node.ticketId,
+      ticketTitle: node.ticketTitle,
+      ticketUrl: node.ticketUrl,
+      model: node.model,
       remote: node.remote,
       categoryId: node.categoryId,
       sortOrder: node.sortOrder,
       dueDate: node.dueDate,
     };
 
+    // If model wasn't persisted, scan the saved output buffer for the banner
+    if (!session.model && buffer.length > 0) {
+      const { parseModelFromOutput } = require("../services/costCache");
+      const parsed = parseModelFromOutput(buffer);
+      if (parsed) session.model = parsed;
+    }
+
     sessions.set(node.sessionId, session);
     sessionIds.push(node.sessionId);
-    log(`\x1b[38;5;245m[restore]\x1b[0m Restored ${node.sessionId} (${node.agentName}) branch: ${gitBranch || 'none'}${node.remote ? ` remote: ${node.remote}` : ''}`);
+    log(`\x1b[38;5;245m[restore]\x1b[0m Restored ${node.sessionId} (${node.agentName}) model: ${session.model || 'unknown'} branch: ${gitBranch || 'none'}${node.remote ? ` remote: ${node.remote}` : ''}`);
   }
 
   // Auto-resume sessions (skip those in TODO or On Hold)
@@ -1637,6 +1891,176 @@ export function restoreSessions() {
       }, index * 2000); // 2s stagger between each session
     });
   }
+}
+
+/**
+ * Auto-resume sessions on startup (resumes all non-archived sessions)
+ * Uses session start queue to prevent OAuth port contention for Claude sessions
+ */
+export function autoResumeSessions() {
+  const { getSessionsToResume, getAutoResumeConfig } = require("./autoResume");
+  const { saveState } = require("./persistence");
+
+  const config = getAutoResumeConfig();
+  if (!config.enabled) {
+    log(`\x1b[38;5;141m[auto-resume]\x1b[0m Auto-resume is disabled`);
+    return;
+  }
+
+  const sessionsToResume = getSessionsToResume();
+
+  if (sessionsToResume.length === 0) {
+    log(`\x1b[38;5;141m[auto-resume]\x1b[0m No sessions to auto-resume`);
+    return;
+  }
+
+  log(`\x1b[38;5;141m[auto-resume]\x1b[0m Auto-resuming ${sessionsToResume.length} sessions...`);
+
+  for (const node of sessionsToResume) {
+    const session = sessions.get(node.sessionId);
+    if (!session) {
+      log(`\x1b[38;5;245m[auto-resume]\x1b[0m Session not found: ${node.sessionId}`);
+      continue;
+    }
+
+    // Skip if already has a PTY (already running)
+    if (session.pty) {
+      log(`\x1b[38;5;245m[auto-resume]\x1b[0m Skipping ${node.sessionId} (already running)`);
+      continue;
+    }
+
+    const startFn = () => {
+      try {
+        // Re-check — user may have clicked Resume while this was queued
+        if (session.pty) {
+          log(`\x1b[38;5;245m[auto-resume]\x1b[0m Skipping ${node.sessionId} (already started)`);
+          signalSessionReady(node.sessionId);
+          return;
+        }
+        // Spawn PTY in originalCwd so Claude finds the session in the correct project directory.
+        // The session's cwd may have drifted to a worktree path, which maps to a different
+        // Claude project dir than where the conversation was originally stored.
+        const resumeCwd = session.originalCwd || session.cwd;
+        if (resumeCwd !== session.cwd) {
+          log(`\x1b[38;5;141m[auto-resume]\x1b[0m Using originalCwd ${resumeCwd} (cwd drifted to ${session.cwd})`);
+        }
+
+        let ptyProcess;
+        if (session.remote) {
+          const host = getRemoteHost(session.remote);
+          ptyProcess = spawnPty("ssh", sshArgs(host, `cd ${resumeCwd} && export OPENUI_SESSION_ID=${node.sessionId} OPENUI_PORT=${TUNNEL_PORT} && exec zsh -l`), {
+            name: "xterm-256color",
+            cwd: process.cwd(),
+            env: {
+              ...process.env,
+              TERM: "xterm-256color",
+            },
+            rows: 30,
+            cols: 120,
+          });
+        } else {
+          ptyProcess = spawnPty(process.env.SHELL || "/bin/bash", [], {
+            name: "xterm-256color",
+            cwd: resumeCwd,
+            env: {
+              ...process.env,
+              TERM: "xterm-256color",
+              OPENUI_SESSION_ID: node.sessionId,
+              OPENUI_PORT: String(process.env.PORT || 6968),
+            },
+            rows: 30,
+            cols: 120,
+          });
+        }
+
+        session.pty = ptyProcess;
+        session.status = "idle";
+        session.isRestored = false;
+        session.autoResumed = true;
+
+        setupPtyHandlers(session, node.sessionId, ptyProcess);
+
+        // Build the command with resume flag if we have a Claude session ID
+        let finalCommand = buildFinalCommand(session.command, session);
+
+        // For Claude sessions, use --resume to restore the specific session.
+        // If the command already has --resume but claudeSessionId is newer (e.g. after /clear),
+        // update the resume ID to the latest one.
+        const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        const existingResume = session.command.match(/--resume\s+([\w-]+)/);
+        if (existingResume && session.claudeSessionId && UUID_RE.test(session.claudeSessionId)
+            && existingResume[1] !== session.claudeSessionId) {
+          // claudeSessionId is newer than what's in the command — update both
+          const oldId = existingResume[1];
+          const resumeArg = `--resume ${session.claudeSessionId}`;
+          session.command = session.command.replace(/--resume\s+[\w-]+/, resumeArg);
+          finalCommand = finalCommand.replace(/--resume\s+[\w-]+/, resumeArg);
+          log(`\x1b[38;5;141m[auto-resume]\x1b[0m Updated stale --resume ${oldId} → ${session.claudeSessionId}`);
+        } else if (existingResume) {
+          log(`\x1b[38;5;141m[auto-resume]\x1b[0m Using existing --resume ${existingResume[1]} from command`);
+        } else if (session.agentId === "claude" && session.claudeSessionId && UUID_RE.test(session.claudeSessionId)) {
+          const resumeArg = `--resume ${session.claudeSessionId}`;
+          if (finalCommand === "isaac" || finalCommand.startsWith("isaac ")) {
+            finalCommand = finalCommand.replace(/^isaac/, `isaac ${resumeArg}`);
+          } else if (finalCommand.startsWith("llm agent claude")) {
+            finalCommand = finalCommand.replace(/^llm agent claude/, `llm agent claude ${resumeArg}`);
+          } else if (finalCommand.startsWith("claude")) {
+            finalCommand = finalCommand.replace(/^claude(\s|$)/, `claude ${resumeArg}$1`);
+          }
+          // Persist --resume into the command so future restarts use the correct ID
+          session.command = session.command.replace(/^(isaac|llm agent claude|claude)/, `$1 ${resumeArg}`);
+          log(`\x1b[38;5;141m[auto-resume]\x1b[0m Resuming Claude session: ${session.claudeSessionId} (persisted to command)`);
+        }
+
+        // Send the command to the PTY after a short delay
+        if (session.remote) {
+          // Wait for shell prompt for remote sessions
+          let commandWritten = false;
+          const SSH_ERROR_PATTERNS = ["Connection refused", "Connection timed out", "Could not resolve",
+            "Permission denied", "Host key verification failed", "No route to host",
+            "Connection closed", "client_loop: send disconnect"];
+          const fallback = setTimeout(() => {
+            if (!commandWritten && session.pty === ptyProcess) {
+              commandWritten = true;
+              ptyProcess.write(`${finalCommand}\r`);
+            }
+          }, 10000);
+          ptyProcess.onData((data: string) => {
+            if (commandWritten) return;
+            for (const pat of SSH_ERROR_PATTERNS) { if (data.includes(pat)) return; }
+            if (data.trim().length > 0) {
+              commandWritten = true;
+              clearTimeout(fallback);
+              session.reconnectAttempts = 0;
+              setTimeout(() => { if (session.pty === ptyProcess) ptyProcess.write(`${finalCommand}\r`); }, 200);
+            }
+          });
+        } else {
+          setTimeout(() => {
+            ptyProcess.write(`${finalCommand}\r`);
+          }, 300);
+        }
+
+        log(`\x1b[38;5;141m[auto-resume]\x1b[0m Resumed ${node.sessionId} (${node.agentName})`);
+      } catch (error) {
+        logError(`\x1b[38;5;141m[auto-resume]\x1b[0m Failed to resume ${node.sessionId}:`, error);
+        // Signal ready on failure so the queue isn't blocked
+        signalSessionReady(node.sessionId);
+      }
+    };
+
+    // Claude agents go through the queue to prevent OAuth port contention
+    if (session.agentId === "claude") {
+      enqueueSessionStart(node.sessionId, startFn, () => session.outputBuffer);
+    } else {
+      // Non-Claude agents start immediately (no OAuth)
+      startFn();
+    }
+  }
+
+  // Save state to persist autoResumed flag
+  saveState(sessions);
+  log(`\x1b[38;5;141m[auto-resume]\x1b[0m Auto-resume complete`);
 }
 
 export async function resumeSession(sessionId: string): Promise<boolean> {

@@ -77,12 +77,17 @@ switch (command) {
     if (flags.prompt) body.initialPrompt = flags.prompt;
     if (flags.remote) body.remote = flags.remote;
     if (flags.team) body.useTeam = true;
+    if (flags["team-name"]) body.teamName = flags["team-name"];
     if (flags.worktree) {
       body.createWorktree = true;
       if (flags.repo) body.branchName = flags.branch || `worktree-${Date.now()}`;
-      // The server handles worktree creation via the repo/branch params
     }
     if (flags.branch) body.branchName = flags.branch;
+    if (flags["base-branch"]) body.baseBranch = flags["base-branch"];
+    if (flags.sparse) {
+      body.sparseCheckout = true;
+      if (flags["sparse-paths"]) body.sparseCheckoutPaths = (flags["sparse-paths"] as string).split(",");
+    }
     if (flags.category) body.categoryId = flags.category;
 
     const result = await api("POST", "/sessions", body);

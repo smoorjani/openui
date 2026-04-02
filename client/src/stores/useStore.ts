@@ -1,6 +1,15 @@
 import { create } from "zustand";
 import { Node } from "@xyflow/react";
 
+export interface Canvas {
+  id: string;
+  name: string;
+  color: string;
+  order: number;
+  createdAt: string;
+  isDefault?: boolean;
+}
+
 export interface Agent {
   id: string;
   name: string;
@@ -10,7 +19,7 @@ export interface Agent {
   icon: string;
 }
 
-export type AgentStatus = "running" | "waiting_input" | "tool_calling" | "idle" | "disconnected" | "error" | "creating";
+export type AgentStatus = "running" | "waiting_input" | "waiting" | "compacting" | "tool_calling" | "idle" | "disconnected" | "error" | "creating";
 
 export interface AgentSession {
   id: string;
@@ -28,12 +37,32 @@ export interface AgentSession {
   customColor?: string;
   notes?: string;
   isRestored?: boolean;
+  // Ticket/Issue info (for GitHub integration)
+  ticketId?: string;
+  ticketTitle?: string;
+  // Current tool being used (from plugin)
   currentTool?: string;
+  // Whether the current tool has been running for a long time (> 5 min)
+  longRunningTool?: boolean;
+  // Token usage from cost cache
+  tokens?: number;
+  // Cumulative tokens across all sessions (shown when history exists)
+  totalTokens?: number;
+  // Current context window size (from last assistant message usage)
+  contextTokens?: number;
+  // Model name (from plugin hook, e.g. "claude-sonnet-4-6")
+  model?: string;
+  // Sleep timer: epoch ms when sleep ends
+  sleepEndTime?: number;
+  // Archive status
+  archived?: boolean;
+  // Remote connection fields
   remote?: string;
   creationProgress?: string;
   sshError?: string;
   reconnectAttempt?: number;
   maxReconnectAttempts?: number;
+  // List view organization
   categoryId?: string;
   sortOrder?: number;
   dueDate?: string;
@@ -51,6 +80,8 @@ interface AppState {
   // Config
   launchCwd: string;
   setLaunchCwd: (cwd: string) => void;
+  isRemote: boolean;
+  setIsRemote: (isRemote: boolean) => void;
 
   // UI Mode
   uiMode: "canvas" | "list";
@@ -80,6 +111,18 @@ interface AppState {
   updateNode: (nodeId: string, updates: Partial<Node>) => void;
   removeNode: (nodeId: string) => void;
 
+  // Canvas/Tab Management
+  canvases: Canvas[];
+  activeCanvasId: string | null;
+  setCanvases: (canvases: Canvas[]) => void;
+  setActiveCanvasId: (id: string) => void;
+  addCanvas: (canvas: Canvas) => void;
+  updateCanvas: (id: string, updates: Partial<Canvas>) => void;
+  removeCanvas: (id: string) => void;
+  reorderCanvases: (canvasIds: string[]) => void;
+  getNodesForCanvas: (canvasId: string) => Node[];
+  moveNodeToCanvas: (nodeId: string, canvasId: string) => void;
+
   // UI State
   selectedNodeId: string | null;
   setSelectedNodeId: (id: string | null) => void;
@@ -93,6 +136,81 @@ interface AppState {
   setNewSessionForNodeId: (nodeId: string | null) => void;
   worktreeModalOpen: boolean;
   setWorktreeModalOpen: (open: boolean) => void;
+
+  // Website node creation
+  addWebsiteModalOpen: boolean;
+  setAddWebsiteModalOpen: (open: boolean) => void;
+  pendingWebsitePosition: { x: number; y: number } | null;
+  setPendingWebsitePosition: (pos: { x: number; y: number } | null) => void;
+
+  // Canvas context menu
+  canvasContextMenu: { x: number; y: number } | null;
+  setCanvasContextMenu: (pos: { x: number; y: number } | null) => void;
+
+  // Archive functionality
+  showArchived: boolean;
+  setShowArchived: (show: boolean) => void;
+  archiveSession: (nodeId: string) => Promise<void>;
+  unarchiveSession: (nodeId: string) => Promise<void>;
+  loadState: () => Promise<void>;
+
+  // Auto-resume progress
+  autoResumeProgress: { total: number; completed: number; current: string | null; isActive: boolean } | null;
+  setAutoResumeProgress: (progress: { total: number; completed: number; current: string | null; isActive: boolean } | null) => void;
+
+  // Auth state (OAuth detection from session start queue)
+  authRequired: boolean;
+  authUrl: string | null;
+  setAuthRequired: (url: string) => void;
+  clearAuthRequired: () => void;
+
+  // Pending resume conversation (from search modal → new session modal bridge)
+  pendingResumeConversation: any | null;
+  setPendingResumeConversation: (conv: any | null) => void;
+
+  // Server connection status
+  connected: boolean;
+  setConnected: (connected: boolean) => void;
+
+  // Sidebar width (shared between Sidebar and App for canvas margin)
+  sidebarWidth: number;
+  setSidebarWidth: (width: number) => void;
+
+  // Theme
+  theme: "dark" | "light";
+  setTheme: (theme: "dark" | "light") => void;
+  toggleTheme: () => void;
+
+  // Notifications (default off)
+  notificationsEnabled: boolean;
+  setNotificationsEnabled: (enabled: boolean) => void;
+
+  // Show token counts on agent cards (default off to keep cards compact)
+  showTokensOnCard: boolean;
+  setShowTokensOnCard: (enabled: boolean) => void;
+
+  // Show context progress bar (default on). When off, shows raw token count instead.
+  showContextBar: boolean;
+  setShowContextBar: (enabled: boolean) => void;
+
+  // Colorblind-friendly status colors (default off)
+  colorblindMode: boolean;
+  setColorblindMode: (enabled: boolean) => void;
+
+  // Shell tabs per node (keyed by nodeId)
+  shellTabs: Map<string, { id: string; shellId: string }[]>;
+  setShellTabs: (nodeId: string, tabs: { id: string; shellId: string }[]) => void;
+  deleteShellTabs: (nodeId: string) => void;
+
+  // Toast notifications (React-managed)
+  toasts: Array<{ id: string; message: string; nodeId: string }>;
+  addToast: (toast: { id: string; message: string; nodeId: string }) => void;
+  removeToast: (id: string) => void;
+
+  // Image upload toasts
+  imageToasts: Array<{ id: string; filePath: string; sessionId: string }>;
+  addImageToast: (toast: { id: string; filePath: string; sessionId: string }) => void;
+  removeImageToast: (id: string) => void;
 
   // Orchestrator
   orchestratorSessionId: string | null;
@@ -141,6 +259,8 @@ export const useStore = create<AppState>((set) => ({
   // Config
   launchCwd: "",
   setLaunchCwd: (cwd) => set({ launchCwd: cwd }),
+  isRemote: false,
+  setIsRemote: (isRemote) => set({ isRemote }),
 
   // UI Mode
   uiMode: (localStorage.getItem("openui-ui-mode") as "canvas" | "list") || "list",
@@ -219,6 +339,63 @@ export const useStore = create<AppState>((set) => ({
       nodes: state.nodes.filter((n) => n.id !== nodeId),
     })),
 
+  // Canvas/Tab Management
+  canvases: [],
+  activeCanvasId: null,
+
+  setCanvases: (canvases) => set({ canvases }),
+
+  setActiveCanvasId: (id) => {
+    set({ activeCanvasId: id });
+    localStorage.setItem("openui-active-canvas", id);
+  },
+
+  addCanvas: (canvas) => {
+    set((state) => ({ canvases: [...state.canvases, canvas] }));
+  },
+
+  updateCanvas: (id, updates) => {
+    set((state) => ({
+      canvases: state.canvases.map((c) =>
+        c.id === id ? { ...c, ...updates } : c
+      ),
+    }));
+  },
+
+  removeCanvas: (id) => {
+    set((state) => {
+      const remaining = state.canvases.filter((c) => c.id !== id);
+      return {
+        canvases: remaining,
+        activeCanvasId:
+          state.activeCanvasId === id
+            ? remaining[0]?.id
+            : state.activeCanvasId,
+      };
+    });
+  },
+
+  reorderCanvases: (canvasIds) => {
+    set((state) => ({
+      canvases: canvasIds
+        .map((id) => state.canvases.find((c) => c.id === id))
+        .filter(Boolean) as Canvas[],
+    }));
+  },
+
+  getNodesForCanvas: (canvasId: string): Node[] => {
+    const state = useStore.getState();
+    return state.nodes.filter((n: any) => n.data?.canvasId === canvasId);
+  },
+
+  moveNodeToCanvas: (nodeId, canvasId) => {
+    set((state) => ({
+      nodes: state.nodes.map((n) =>
+        n.id === nodeId ? { ...n, data: { ...n.data, canvasId } } : n
+      ),
+    }));
+  },
+
   // UI State
   selectedNodeId: null,
   setSelectedNodeId: (id) => set({ selectedNodeId: id }),
@@ -232,6 +409,162 @@ export const useStore = create<AppState>((set) => ({
   setNewSessionForNodeId: (nodeId) => set({ newSessionForNodeId: nodeId }),
   worktreeModalOpen: false,
   setWorktreeModalOpen: (open) => set({ worktreeModalOpen: open }),
+
+  // Website node creation
+  addWebsiteModalOpen: false,
+  setAddWebsiteModalOpen: (open) => set({ addWebsiteModalOpen: open }),
+  pendingWebsitePosition: null,
+  setPendingWebsitePosition: (pos) => set({ pendingWebsitePosition: pos }),
+
+  // Canvas context menu
+  canvasContextMenu: null,
+  setCanvasContextMenu: (pos) => set({ canvasContextMenu: pos }),
+
+  // Archive functionality
+  showArchived: false,
+  setShowArchived: (show) => set({ showArchived: show }),
+
+  archiveSession: async (nodeId) => {
+    const state = useStore.getState();
+    const session = state.sessions.get(nodeId);
+    if (!session) return;
+
+    const res = await fetch(`/api/sessions/${session.sessionId}/archive`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ archived: true }),
+    });
+
+    if (!res.ok) {
+      console.error("Failed to archive session: server returned", res.status);
+      return;
+    }
+
+    // Remove from canvas
+    set((state) => ({
+      nodes: state.nodes.filter((n) => n.id !== nodeId),
+      sessions: new Map(
+        Array.from(state.sessions.entries()).map(([id, s]) =>
+          id === nodeId ? [id, { ...s, archived: true }] : [id, s]
+        )
+      ),
+    }));
+  },
+
+  unarchiveSession: async (nodeId) => {
+    const state = useStore.getState();
+    // Archived sessions are not in the sessions Map — look up sessionId from nodes
+    const session = state.sessions.get(nodeId);
+    const node = state.nodes.find(n => n.id === nodeId);
+    const sessionId = session?.sessionId ?? (node?.data as any)?.sessionId;
+    if (!sessionId) {
+      console.error("Failed to unarchive: no sessionId found for node", nodeId);
+      return;
+    }
+
+    const res = await fetch(`/api/sessions/${sessionId}/archive`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ archived: false }),
+    });
+
+    if (!res.ok) {
+      console.error("Failed to unarchive session: server returned", res.status);
+      return;
+    }
+
+    window.location.reload();
+  },
+
+  // Auto-resume progress
+  autoResumeProgress: null,
+  setAutoResumeProgress: (progress) => set({ autoResumeProgress: progress }),
+
+  // Auth state
+  authRequired: false,
+  authUrl: null,
+  setAuthRequired: (url) => set({ authRequired: true, authUrl: url }),
+  clearAuthRequired: () => set({ authRequired: false, authUrl: null }),
+
+  pendingResumeConversation: null,
+  setPendingResumeConversation: (conv) => set({ pendingResumeConversation: conv }),
+
+  connected: true,
+  setConnected: (connected) => set({ connected }),
+
+  sidebarWidth: parseFloat(localStorage.getItem("openui-sidebar-pct") || "30"),
+  setSidebarWidth: (width) => set({ sidebarWidth: width }),
+
+  theme: (localStorage.getItem("openui-theme") as "dark" | "light") || "dark",
+  setTheme: (theme) => {
+    localStorage.setItem("openui-theme", theme);
+    document.documentElement.setAttribute("data-theme", theme);
+    set({ theme });
+  },
+  toggleTheme: () => {
+    const current = useStore.getState().theme;
+    const next = current === "dark" ? "light" : "dark";
+    localStorage.setItem("openui-theme", next);
+    document.documentElement.setAttribute("data-theme", next);
+    set({ theme: next });
+  },
+  notificationsEnabled: localStorage.getItem("openui-notifications") === "true",
+  setNotificationsEnabled: (enabled) => {
+    localStorage.setItem("openui-notifications", String(enabled));
+    set({ notificationsEnabled: enabled });
+  },
+
+  showTokensOnCard: localStorage.getItem("openui-show-tokens-on-card") === "true",
+  setShowTokensOnCard: (enabled) => {
+    localStorage.setItem("openui-show-tokens-on-card", String(enabled));
+    set({ showTokensOnCard: enabled });
+  },
+
+  showContextBar: localStorage.getItem("openui-show-context-bar") !== "false",
+  setShowContextBar: (enabled) => {
+    localStorage.setItem("openui-show-context-bar", String(enabled));
+    set({ showContextBar: enabled });
+  },
+
+  colorblindMode: localStorage.getItem("openui-colorblind-mode") === "true",
+  setColorblindMode: (enabled) => {
+    localStorage.setItem("openui-colorblind-mode", String(enabled));
+    set({ colorblindMode: enabled });
+  },
+
+  // Shell tabs per node
+  shellTabs: new Map(),
+  setShellTabs: (nodeId, tabs) =>
+    set((state) => {
+      const next = new Map(state.shellTabs);
+      next.set(nodeId, tabs);
+      return { shellTabs: next };
+    }),
+  deleteShellTabs: (nodeId) =>
+    set((state) => {
+      const next = new Map(state.shellTabs);
+      next.delete(nodeId);
+      return { shellTabs: next };
+    }),
+
+  // Toast notifications
+  toasts: [],
+  addToast: (toast) => set((state) => ({ toasts: [...state.toasts, toast] })),
+  removeToast: (id) => set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
+
+  // Image upload toasts
+  imageToasts: [],
+  addImageToast: (toast) => set((state) => ({ imageToasts: [...state.imageToasts, toast] })),
+  removeImageToast: (id) => set((state) => ({ imageToasts: state.imageToasts.filter((t) => t.id !== id) })),
+
+  loadState: async () => {
+    const showArchived = useStore.getState().showArchived;
+    const response = await fetch(`/api/state?archived=${showArchived}`);
+    await response.json();
+    // This would need to update nodes based on the loaded state
+    // Implementation depends on how the app currently loads state
+    // For now, a page reload might be needed to see unarchived sessions
+  },
 
   // Orchestrator
   orchestratorSessionId: localStorage.getItem("openui-orchestrator-session"),

@@ -5,6 +5,8 @@ import { useStore, AgentStatus } from "../../stores/useStore";
 import { AgentNodeCard } from "./AgentNodeCard";
 import { AgentNodeContextMenu } from "./AgentNodeContextMenu";
 import { useAgentNodeState } from "./useAgentNodeState";
+import { ForkDialog } from "../ForkDialog";
+import { DeleteConfirmDialog } from "../DeleteConfirmDialog";
 
 const iconMap: Record<string, any> = {
   sparkles: Sparkles,
@@ -29,24 +31,36 @@ export const AgentNode = ({ id, data }: NodeProps) => {
   const nodeData = data as unknown as AgentNodeData;
   const { setSelectedNodeId, setSidebarOpen } = useStore();
 
-  // Use our store's selectedNodeId for selection state instead of React Flow's
+  // Preserve local: Use our store's selectedNodeId for selection state instead of React Flow's
   const isSelected = useStore((state) => state.selectedNodeId === id);
 
-  // Subscribe directly to status, currentTool, creationProgress as primitive values - this guarantees re-render on change
+  // Subscribe directly to primitive values - this guarantees re-render only when each value changes
   const status: AgentStatus = useStore((state) => state.sessions.get(id)?.status) || "idle";
   const currentTool = useStore((state) => state.sessions.get(id)?.currentTool);
+  const longRunningTool = useStore((state) => state.sessions.get(id)?.longRunningTool) || false;
   const creationProgress = useStore((state) => state.sessions.get(id)?.creationProgress);
 
   // Get the full session for other data
   const session = useStore((state) => state.sessions.get(id));
+  const showArchived = useStore((state) => state.showArchived);
 
   const {
     contextMenu,
     handleContextMenu,
     handleDelete,
+    handleDeleteConfirm,
+    handleFork,
+    handleForkConfirm,
+    handleArchive,
+    canFork,
     closeContextMenu,
+    forkDialogOpen,
+    setForkDialogOpen,
+    deleteDialogOpen,
+    setDeleteDialogOpen,
   } = useAgentNodeState(id, nodeData, session);
 
+  // Preserve local: handleClick for selection
   const handleClick = (e: React.MouseEvent) => {
     e.stopPropagation();
     setSelectedNodeId(id);
@@ -79,6 +93,18 @@ export const AgentNode = ({ id, data }: NodeProps) => {
           gitBranch={session?.gitBranch}
           remote={session?.remote}
           creationProgress={creationProgress}
+          ticketId={session?.ticketId}
+          ticketTitle={session?.ticketTitle}
+          longRunningTool={longRunningTool}
+          tokens={session?.tokens}
+          totalTokens={session?.totalTokens}
+          contextTokens={session?.contextTokens}
+          model={session?.model}
+          command={session?.command}
+          sleepEndTime={session?.sleepEndTime}
+          isArchived={showArchived}
+          onArchive={handleArchive}
+          onDelete={handleDelete}
         />
       </motion.div>
 
@@ -87,6 +113,29 @@ export const AgentNode = ({ id, data }: NodeProps) => {
           position={contextMenu}
           onClose={closeContextMenu}
           onDelete={handleDelete}
+          onFork={handleFork}
+          onArchive={handleArchive}
+          showFork={canFork}
+        />
+      )}
+
+      <ForkDialog
+        open={forkDialogOpen}
+        onClose={() => setForkDialogOpen(false)}
+        parentName={session?.customName || session?.agentName || nodeData.label || "Agent"}
+        parentColor={session?.customColor || session?.color || nodeData.color || "#22C55E"}
+        parentIcon={nodeData.icon || "sparkles"}
+        parentCwd={session?.cwd || ""}
+        onConfirm={handleForkConfirm}
+      />
+
+      {session && (
+        <DeleteConfirmDialog
+          open={deleteDialogOpen}
+          onClose={() => setDeleteDialogOpen(false)}
+          sessionId={session.sessionId}
+          sessionName={session.customName || session.agentName || nodeData.label || "Agent"}
+          onConfirm={handleDeleteConfirm}
         />
       )}
     </>
