@@ -84,8 +84,14 @@ interface AppState {
   setIsRemote: (isRemote: boolean) => void;
 
   // UI Mode
-  uiMode: "canvas" | "list";
-  setUiMode: (mode: "canvas" | "list") => void;
+  uiMode: "canvas" | "list" | "focus";
+  setUiMode: (mode: "canvas" | "list" | "focus") => void;
+
+  // Focus view
+  focusSessions: string[];
+  setFocusSessions: (nodeIds: string[]) => void;
+  addFocusSession: (nodeId: string) => void;
+  removeFocusSession: (nodeId: string) => void;
 
   // List sections
   listSections: ListSection[];
@@ -263,11 +269,31 @@ export const useStore = create<AppState>((set) => ({
   setIsRemote: (isRemote) => set({ isRemote }),
 
   // UI Mode
-  uiMode: (localStorage.getItem("openui-ui-mode") as "canvas" | "list") || "list",
+  uiMode: (localStorage.getItem("openui-ui-mode") as "canvas" | "list" | "focus") || "list",
   setUiMode: (mode) => {
     localStorage.setItem("openui-ui-mode", mode);
     set({ uiMode: mode });
   },
+
+  // Focus view
+  focusSessions: JSON.parse(localStorage.getItem("openui-focus-sessions") || "[]"),
+  setFocusSessions: (nodeIds) => {
+    localStorage.setItem("openui-focus-sessions", JSON.stringify(nodeIds));
+    set({ focusSessions: nodeIds });
+  },
+  addFocusSession: (nodeId) =>
+    set((state) => {
+      if (state.focusSessions.includes(nodeId)) return state;
+      const next = [...state.focusSessions, nodeId];
+      localStorage.setItem("openui-focus-sessions", JSON.stringify(next));
+      return { focusSessions: next };
+    }),
+  removeFocusSession: (nodeId) =>
+    set((state) => {
+      const next = state.focusSessions.filter((id) => id !== nodeId);
+      localStorage.setItem("openui-focus-sessions", JSON.stringify(next));
+      return { focusSessions: next };
+    }),
 
   // List sections
   listSections: loadListSections(),

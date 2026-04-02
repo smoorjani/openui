@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, GitBranch, Plus, Trash2, Folder, ChevronRight, LayoutGrid, List, Shield, Sun, Moon } from "lucide-react";
+import { X, GitBranch, Plus, Trash2, Folder, ChevronRight, LayoutGrid, List, Columns, Shield, Sun, Moon } from "lucide-react";
 import { useStore } from "../stores/useStore";
 import { useTerminalPool } from "../contexts/TerminalPoolContext";
 
@@ -290,7 +290,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                     </div>
                     <h3 className="text-sm font-medium text-primary">UI Mode</h3>
                   </div>
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="grid grid-cols-3 gap-2">
                     <button
                       onClick={() => setUiMode("canvas")}
                       className={`flex flex-col items-center gap-1.5 px-3 py-3 rounded-lg border transition-colors ${
@@ -314,6 +314,18 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                       <List className="w-5 h-5" />
                       <span className="text-xs font-medium">List</span>
                       <span className="text-[10px] text-muted">Focused task view</span>
+                    </button>
+                    <button
+                      onClick={() => setUiMode("focus")}
+                      className={`flex flex-col items-center gap-1.5 px-3 py-3 rounded-lg border transition-colors ${
+                        uiMode === "focus"
+                          ? "border-violet-500 bg-violet-500/10 text-primary"
+                          : "border-border bg-canvas text-tertiary hover:text-primary hover:border-zinc-500"
+                      }`}
+                    >
+                      <Columns className="w-5 h-5" />
+                      <span className="text-xs font-medium">Focus</span>
+                      <span className="text-[10px] text-muted">Side-by-side terminals</span>
                     </button>
                   </div>
                 </div>

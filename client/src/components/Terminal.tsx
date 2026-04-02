@@ -428,6 +428,13 @@ export function Terminal({ sessionId, color, nodeId, isActive = true, isShell }:
         }
         return false;
       }
+      // Let Ctrl+` cycle focus panels
+      if (event.code === 'Backquote' && event.ctrlKey) {
+        if (event.type === 'keydown') {
+          window.dispatchEvent(new CustomEvent('openui:cycle-focus'));
+        }
+        return false;
+      }
       return true; // Allow default handling for other keys
     });
 

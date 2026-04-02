@@ -30,6 +30,7 @@ import { CanvasContextMenu } from "./components/CanvasContextMenu";
 import { AddWebsiteModal } from "./components/AddWebsiteModal";
 import { useWebsiteNodes } from "./hooks/useWebsiteNodes";
 import { ListView } from "./components/ListView/ListView";
+import { FocusView } from "./components/FocusView";
 import { OrchestratorPanel } from "./components/OrchestratorPanel";
 
 const nodeTypes = {
@@ -1076,6 +1077,8 @@ function AppContent() {
 
       {uiMode === "list" ? (
         <ListView />
+      ) : uiMode === "focus" ? (
+        <FocusView />
       ) : (
         <div
           className="flex-1 relative"
