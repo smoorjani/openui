@@ -3,23 +3,21 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "*",
+        "matcher": "AskUserQuestion",
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/status-reporter.sh pre_tool",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/status-reporter.sh waiting_input",
             "timeout": 5
           }
         ]
-      }
-    ],
-    "PermissionRequest": [
+      },
       {
         "matcher": "*",
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/status-reporter.sh waiting_input",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/status-reporter.sh pre_tool",
             "timeout": 5
           }
         ]
@@ -51,6 +49,7 @@
     ],
     "UserPromptSubmit": [
       {
+        "matcher": "*",
         "hooks": [
           {
             "type": "command",
@@ -62,6 +61,7 @@
     ],
     "Stop": [
       {
+        "matcher": "*",
         "hooks": [
           {
             "type": "command",
@@ -127,9 +127,21 @@
         ]
       }
     ],
+    "PreCompact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/status-reporter.sh compacting",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
-        "matcher": "startup",
+        "matcher": "*",
         "hooks": [
           {
             "type": "command",
@@ -137,13 +149,15 @@
             "timeout": 5
           }
         ]
-      },
+      }
+    ],
+    "PermissionRequest": [
       {
-        "matcher": "resume",
+        "matcher": "*",
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/status-reporter.sh waiting_input",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/status-reporter.sh permission_request",
             "timeout": 5
           }
         ]

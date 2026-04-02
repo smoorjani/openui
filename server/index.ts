@@ -3,9 +3,10 @@ import { cors } from "hono/cors";
 import { serveStatic } from "hono/bun";
 import type { ServerWebSocket } from "bun";
 import { spawn } from "bun-pty";
-import { apiRoutes, setUiBroadcast } from "./routes/api";
-import { sessions, restoreSessions, getRemoteHost } from "./services/sessionManager";
-import { saveState } from "./services/persistence";
+import { apiRoutes, setUiBroadcast, loadConfig } from "./routes/api";
+import { sessions, restoreSessions, autoResumeSessions, getRemoteHost } from "./services/sessionManager";
+import { saveState, migrateStateToHome } from "./services/persistence";
+import { setAuthBroadcast } from "./services/sessionStartQueue";
 import type { WebSocketData } from "./types";
 
 // Global set of all connected WebSocket clients for UI broadcasts
@@ -18,11 +19,53 @@ const app = new Hono();
 const PORT = Number(process.env.PORT) || 6968;
 const QUIET = !!process.env.OPENUI_QUIET;
 
+// Conditionally log only in dev mode
 const log = QUIET ? () => {} : console.log.bind(console);
 
-app.use("*", cors());
+const DEFAULT_MAX_HISTORY_KB = 128;
+
+function getMaxHistoryBytes(): number {
+  const config = loadConfig();
+  const kb = config.maxHistoryKB ?? DEFAULT_MAX_HISTORY_KB;
+  return kb * 1024;
+}
+
+function buildReplayHistory(outputBuffer: string[]): string {
+  const maxBytes = getMaxHistoryBytes();
+  let history = "";
+  let totalBytes = 0;
+
+  for (let i = outputBuffer.length - 1; i >= 0; i--) {
+    const chunk = outputBuffer[i];
+    if (totalBytes + chunk.length > maxBytes) {
+      break;
+    }
+    history = chunk + history;
+    totalBytes += chunk.length;
+  }
+
+  if (history.length > 0) {
+    history = "\x1b[0m" + history;
+  }
+
+  return history;
+}
+
+// Middleware
+app.use("*", cors({ origin: ["http://localhost:6968", "http://localhost:6969"] }));
+
+// API Routes
 app.route("/api", apiRoutes);
-app.use("/*", serveStatic({ root: "./client/dist" }));
+
+// Serve static files (no-cache on index.html so browser always gets fresh asset references)
+app.use("/*", serveStatic({
+  root: "./client/dist",
+  onFound: (path, c) => {
+    if (path.endsWith("index.html")) {
+      c.header("Cache-Control", "no-cache");
+    }
+  },
+}));
 
 // Wire up UI broadcast so API routes can send messages to all clients
 setUiBroadcast((msg: any) => {
@@ -34,6 +77,14 @@ setUiBroadcast((msg: any) => {
   }
 });
 
+// Restore sessions BEFORE starting server so API requests find populated sessions Map
+const migrationResult = migrateStateToHome();
+if (migrationResult.migrated) {
+  log(`\x1b[38;5;82m[migration]\x1b[0m Migrated state from ${migrationResult.source}`);
+}
+restoreSessions();
+
+// WebSocket server
 Bun.serve<WebSocketData>({
   port: PORT,
   fetch(req, server) {
@@ -46,7 +97,8 @@ Bun.serve<WebSocketData>({
       const session = sessions.get(sessionId);
       if (!session) return new Response("Session not found", { status: 404 });
 
-      const upgraded = server.upgrade(req, { data: { sessionId } });
+      const lastSeq = Number(url.searchParams.get("lastSeq")) || 0;
+      const upgraded = server.upgrade(req, { data: { sessionId, lastSeq } });
       if (upgraded) return undefined;
       return new Response("WebSocket upgrade failed", { status: 400 });
     }
@@ -73,7 +125,7 @@ Bun.serve<WebSocketData>({
   },
   websocket: {
     open(ws) {
-      const { sessionId, isShell, cwd, remote } = ws.data;
+      const { sessionId, lastSeq, isShell, cwd, remote } = ws.data;
       allClients.add(ws);
 
       if (ws.data.isUi) {
@@ -151,17 +203,45 @@ Bun.serve<WebSocketData>({
         return;
       }
 
-      log(`\x1b[38;5;245m[ws]\x1b[0m Connected to ${sessionId}`);
+      log(`\x1b[38;5;245m[ws]\x1b[0m Connected to ${sessionId} (lastSeq=${lastSeq}, serverSeq=${session.outputSeq})`);
       session.clients.add(ws);
 
-      if (session.outputBuffer.length > 0 && !session.isRestored && session.pty) {
-        const history = session.outputBuffer.join("");
-        ws.send(JSON.stringify({ type: "output", data: history }));
-      } else if (session.isRestored || !session.pty) {
+      if (session.isRestored || !session.pty) {
         ws.send(JSON.stringify({
           type: "output",
-          data: "\x1b[38;5;245mSession was disconnected.\r\nClick \"Resume\" to continue or \"New Session\" to start fresh.\x1b[0m\r\n"
+          data: "\x1b[38;5;245mSession was disconnected.\r\nClick \"Spawn Fresh\" to start a new session.\x1b[0m\r\n",
+          seq: session.outputSeq,
         }));
+      } else if (lastSeq > 0 && lastSeq === session.outputSeq) {
+        // Client cache is up to date — skip buffer replay
+        log(`\x1b[38;5;245m[ws]\x1b[0m Cache hit for ${sessionId}, skipping buffer`);
+        ws.send(JSON.stringify({ type: "output", data: "", seq: session.outputSeq }));
+      } else if (lastSeq > 0 && session.outputBuffer.length > 0) {
+        // Client has cache — always send as isDelta to preserve scrollback.
+        // The client will append (not clear) when it sees isDelta: true.
+        const missedChunks = session.outputSeq - lastSeq;
+        if (missedChunks > 0 && missedChunks <= session.outputBuffer.length) {
+          // Exact delta — send only the chunks the client missed
+          const startIndex = session.outputBuffer.length - missedChunks;
+          let delta = "";
+          for (let i = startIndex; i < session.outputBuffer.length; i++) {
+            delta += session.outputBuffer[i];
+          }
+          log(`\x1b[38;5;245m[ws]\x1b[0m Delta replay for ${sessionId}: ${missedChunks} chunks`);
+          ws.send(JSON.stringify({ type: "output", data: delta, seq: session.outputSeq, isDelta: true }));
+        } else {
+          // Can't compute an exact delta (buffer overflow, seq reset after server
+          // restart, or negative missedChunks). Replaying as a delta would append
+          // recent output onto a stale client snapshot and corrupt the visible
+          // history, so force a clean recent-history replay instead.
+          const history = buildReplayHistory(session.outputBuffer);
+          log(`\x1b[38;5;245m[ws]\x1b[0m Stale cache fallback for ${sessionId}: replaying recent history (missed=${missedChunks}, bufLen=${session.outputBuffer.length})`);
+          ws.send(JSON.stringify({ type: "output", data: history, seq: session.outputSeq }));
+        }
+      } else if (session.outputBuffer.length > 0) {
+        // No cache (lastSeq=0) — full buffer replay for first-time connections
+        const history = buildReplayHistory(session.outputBuffer);
+        ws.send(JSON.stringify({ type: "output", data: history, seq: session.outputSeq }));
       }
 
       ws.send(JSON.stringify({
@@ -169,7 +249,11 @@ Bun.serve<WebSocketData>({
         status: session.status,
         isRestored: session.isRestored,
         creationProgress: session.creationProgress,
+        currentTool: session.currentTool,
+        gitBranch: session.gitBranch,
+        longRunningTool: session.longRunningTool || false,
       }));
+
     },
     message(ws, message) {
       const { sessionId, isShell } = ws.data;
@@ -261,7 +345,7 @@ Bun.serve<WebSocketData>({
             }
             break;
           case "resize":
-            if (session.pty) {
+            if (session.pty && msg.cols > 20 && msg.rows > 5) {
               session.pty.resize(msg.cols, msg.rows);
             }
             break;
@@ -297,16 +381,38 @@ Bun.serve<WebSocketData>({
   },
 });
 
-restoreSessions();
+// Wire up auth broadcast — notify all connected clients when OAuth is needed/complete
+function broadcastToAll(message: object) {
+  const json = JSON.stringify(message);
+  for (const session of sessions.values()) {
+    for (const client of session.clients) {
+      try {
+        if (client.readyState === 1) client.send(json);
+      } catch {}
+    }
+  }
+}
+
+setAuthBroadcast(
+  (url) => broadcastToAll({ type: "auth_required", url }),
+  () => broadcastToAll({ type: "auth_complete" }),
+);
+
+// Auto-resume non-archived sessions after a short delay
+setTimeout(() => {
+  autoResumeSessions();
+}, 1000);
 
 log(`\x1b[38;5;141m[server]\x1b[0m Running on http://localhost:${PORT}`);
 log(`\x1b[38;5;245m[server]\x1b[0m Launch directory: ${process.env.LAUNCH_CWD || process.cwd()}`);
 
+// Periodic state save
 setInterval(() => {
   saveState(sessions);
 }, 30000);
 
-process.on("SIGINT", () => {
+// Cleanup on exit
+process.on("SIGINT", async () => {
   log("\n\x1b[38;5;245m[server]\x1b[0m Saving state before exit...");
   saveState(sessions);
   for (const [, session] of sessions) {

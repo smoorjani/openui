@@ -1,7 +1,9 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   X,
+  Terminal as TerminalIcon,
   Clock,
   Folder,
   Edit3,
@@ -15,27 +17,24 @@ import {
   Brain,
   Wand2,
   GitBranch,
-  MessageSquare,
-  Terminal as TerminalIcon,
-  Columns2,
-  Rows2,
+  GitFork,
+  Archive,
+  Trash2,
+  Plus,
+  Maximize2,
+  Minimize2,
+  MoreHorizontal,
+  ChevronRight,
 } from "lucide-react";
-import { useStore, AgentStatus } from "../stores/useStore";
-import { Terminal } from "./Terminal";
-import { ShellTerminal } from "./ShellTerminal";
+import { useStore } from "../stores/useStore";
+import { useTerminalPool } from "../contexts/TerminalPoolContext";
+import { ResizeHandle } from "./ResizeHandle";
+import { ForkDialog, type ForkDialogResult } from "./ForkDialog";
+import { DeleteConfirmDialog } from "./DeleteConfirmDialog";
+import { deleteSessionWithCleanup } from "../utils/deleteSession";
 
-type TerminalTab = "claude" | "shell";
-type LayoutMode = "tabbed" | "split";
+import { getContextWindowSize } from "../utils/contextWindow";
 
-const statusConfig: Record<AgentStatus, { label: string; color: string }> = {
-  creating: { label: "Creating worktree", color: "#3B82F6" },
-  running: { label: "Running", color: "#22C55E" },
-  waiting_input: { label: "Waiting for input", color: "#F97316" },
-  tool_calling: { label: "Tool Calling", color: "#8B5CF6" },
-  idle: { label: "Idle", color: "#FBBF24" },
-  disconnected: { label: "Disconnected", color: "#EF4444" },
-  error: { label: "Error", color: "#EF4444" },
-};
 
 const presetColors = [
   "#F97316", "#22C55E", "#3B82F6", "#8B5CF6", "#EC4899", "#EF4444", "#FBBF24", "#14B8A6"
@@ -52,6 +51,87 @@ const iconOptions = [
   { id: "wand2", icon: Wand2, label: "Wand" },
 ];
 
+interface MountedTerminal {
+  id: string;
+  sessionId: string;
+  nodeId: string;
+  color: string;
+  isShell?: boolean;
+}
+
+function PooledTerminalMount({
+  terminalId,
+  terminals,
+}: {
+  terminalId: string | null;
+  terminals: Record<string, MountedTerminal>;
+}) {
+  const pool = useTerminalPool();
+  const mountRef = useRef<HTMLDivElement>(null);
+  const prevIdRef = useRef<string | null>(null);
+  const attachedRef = useRef(false);
+
+  // Core attach logic — only runs when mount point has real dimensions
+  const doAttach = useCallback(() => {
+    if (!mountRef.current || !terminalId) return;
+    const info = terminals[terminalId];
+    if (!info) return;
+
+    // Skip if mount point has zero dimensions (layout not ready)
+    if (mountRef.current.clientWidth === 0 || mountRef.current.clientHeight === 0) return;
+
+    pool.acquire(terminalId, info.sessionId, info.nodeId, info.color, !!info.isShell);
+    pool.attachTo(terminalId, mountRef.current);
+    attachedRef.current = true;
+  }, [terminalId, terminals, pool]);
+
+  useEffect(() => {
+    if (!mountRef.current) return;
+
+    // Detach previous terminal if switching
+    if (prevIdRef.current && prevIdRef.current !== terminalId) {
+      pool.detach(prevIdRef.current);
+      attachedRef.current = false;
+    }
+    prevIdRef.current = terminalId;
+
+    // Try attaching immediately (works if layout is ready)
+    doAttach();
+
+    // If mount point had zero dimensions, watch for layout to settle
+    if (!attachedRef.current && mountRef.current) {
+      const observer = new ResizeObserver(() => {
+        if (attachedRef.current) { observer.disconnect(); return; }
+        if (mountRef.current && mountRef.current.clientWidth > 0 && mountRef.current.clientHeight > 0) {
+          doAttach();
+          observer.disconnect();
+        }
+      });
+      observer.observe(mountRef.current);
+      return () => observer.disconnect();
+    }
+  }, [terminalId, terminals, pool, doAttach]);
+
+  // Detach on unmount (sidebar closing)
+  useEffect(() => {
+    return () => {
+      if (prevIdRef.current) {
+        pool.detach(prevIdRef.current);
+        prevIdRef.current = null;
+        attachedRef.current = false;
+      }
+    };
+  }, [pool]);
+
+  return (
+    <div
+      ref={mountRef}
+      className="w-full h-full"
+      style={{ backgroundColor: "#0d0d0d" }}
+    />
+  );
+}
+
 export function Sidebar() {
   const {
     sidebarOpen,
@@ -64,8 +144,19 @@ export function Sidebar() {
     nodes,
     setNewSessionModalOpen,
     setNewSessionForNodeId,
+    unarchiveSession,
+    showArchived,
+    addNode,
+    addSession,
+    activeCanvasId,
+    sidebarWidth,
+    setSidebarWidth,
+    shellTabs: shellTabsMap,
+    setShellTabs,
+    launchCwd,
   } = useStore();
 
+  const pool = useTerminalPool();
   const session = selectedNodeId ? sessions.get(selectedNodeId) : null;
   const node = selectedNodeId ? nodes.find(n => n.id === selectedNodeId) : null;
 
@@ -74,44 +165,37 @@ export function Sidebar() {
   const [editNotes, setEditNotes] = useState("");
   const [editColor, setEditColor] = useState("");
   const [editIcon, setEditIcon] = useState("");
-  const [terminalKey, setTerminalKey] = useState(0);
-  const [activeTab, setActiveTab] = useState<TerminalTab>("claude");
-  const [layoutMode, setLayoutMode] = useState<LayoutMode>(() => {
-    return (localStorage.getItem("openui-layout-mode") as LayoutMode) || "tabbed";
-  });
-  const [sidebarWidth, setSidebarWidth] = useState(() => {
-    const saved = localStorage.getItem("openui-sidebar-width");
-    return saved ? parseInt(saved, 10) : 512;
-  });
-  const [isResizing, setIsResizing] = useState(false);
+  const [forkDialogOpen, setForkDialogOpen] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [mountedTerminals, setMountedTerminals] = useState<Record<string, MountedTerminal>>({});
+  const sidebarRef = useRef<HTMLDivElement>(null);
 
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    setIsResizing(true);
-  }, []);
+  const [shellsRestored, setShellsRestored] = useState(false);
 
+  // Restore persisted shell tabs from server on mount
   useEffect(() => {
-    if (!isResizing) return;
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const newWidth = window.innerWidth - e.clientX;
-      const clampedWidth = Math.max(400, Math.min(newWidth, window.innerWidth - 100));
-      setSidebarWidth(clampedWidth);
-    };
-
-    const handleMouseUp = () => {
-      setIsResizing(false);
-      localStorage.setItem("openui-sidebar-width", sidebarWidth.toString());
-    };
-
-    document.addEventListener("mousemove", handleMouseMove);
-    document.addEventListener("mouseup", handleMouseUp);
-
-    return () => {
-      document.removeEventListener("mousemove", handleMouseMove);
-      document.removeEventListener("mouseup", handleMouseUp);
-    };
-  }, [isResizing, sidebarWidth]);
+    if (shellsRestored) return;
+    fetch("/api/shells")
+      .then(res => res.ok ? res.json() : [])
+      .then((shells: { shellId: string; nodeId: string; cwd: string; createdAt: string }[]) => {
+        const currentTabs = useStore.getState().shellTabs;
+        for (const shell of shells) {
+          if (!shell.nodeId) continue;
+          const existing = currentTabs.get(shell.nodeId) || [];
+          // Avoid duplicates (e.g. if already created in this session)
+          if (existing.some(t => t.shellId === shell.shellId)) continue;
+          const updated = [...existing, { id: shell.shellId, shellId: shell.shellId }];
+          setShellTabs(shell.nodeId, updated);
+        }
+        setShellsRestored(true);
+      })
+      .catch(() => setShellsRestored(true));
+  }, [shellsRestored, setShellTabs]);
+  const shellTabs = selectedNodeId ? (shellTabsMap.get(selectedNodeId) || []) : [];
+  const [activeTerminalTab, setActiveTerminalTab] = useState<string>("agent");
+  const [terminalMaximized, setTerminalMaximized] = useState(false);
+  const [showMenu, setShowMenu] = useState(false);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
 
   // Reset edit state when session changes (but NOT when nodes change)
   useEffect(() => {
@@ -122,16 +206,16 @@ export function Sidebar() {
       const currentNode = nodes.find(n => n.id === selectedNodeId);
       const nodeIcon = currentNode?.data?.icon;
       setEditIcon(typeof nodeIcon === 'string' ? nodeIcon : "cpu");
+      setIsEditing(false);
+      setShowMenu(false);
+      setActiveTerminalTab("agent");
     }
-    setIsEditing(false);
-    // Switch back to Claude tab when changing sessions
-    setActiveTab("claude");
-    // Note: terminalKey is NOT incremented here - the Terminal key already includes sessionId
-    // so switching sessions naturally creates the correct terminal. Shell terminals persist
-    // because we render all of them and just show/hide with invisible class.
   }, [session?.sessionId]); // Removed nodes and selectedNodeId to prevent closing on updates
 
   const handleClose = () => {
+    // Just close the sidebar UI — shell tabs persist in the Zustand store
+    // so they reappear when the panel is reopened for the same node.
+    setActiveTerminalTab("agent");
     setSidebarOpen(false);
     setSelectedNodeId(null);
     setIsEditing(false);
@@ -144,69 +228,342 @@ export function Sidebar() {
     }
   };
 
+  const handleNewShellTab = useCallback(async () => {
+    if (!session || !selectedNodeId) return;
+    try {
+      const res = await fetch("/api/shell", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cwd: session.cwd || launchCwd, nodeId: selectedNodeId }),
+      });
+      if (!res.ok) return;
+      const { shellId } = await res.json();
+      const tabId = `shell-${Date.now()}`;
+      const newTab = { id: tabId, shellId };
+
+      if (selectedNodeId) {
+        const updated = [...(shellTabsMap.get(selectedNodeId) || []), newTab];
+        setShellTabs(selectedNodeId, updated);
+      }
+      setActiveTerminalTab(tabId);
+    } catch (e) {
+      console.error("Failed to create shell:", e);
+    }
+  }, [session, selectedNodeId, shellTabsMap, setShellTabs, launchCwd]);
+
+  const upsertMountedTerminal = useCallback((terminal: MountedTerminal) => {
+    setMountedTerminals((prev) => {
+      const existing = prev[terminal.id];
+      if (
+        existing
+        && existing.sessionId === terminal.sessionId
+        && existing.nodeId === terminal.nodeId
+        && existing.color === terminal.color
+        && existing.isShell === terminal.isShell
+      ) {
+        return prev;
+      }
+      return { ...prev, [terminal.id]: terminal };
+    });
+  }, []);
+
+  const removeMountedTerminal = useCallback((terminalId: string) => {
+    setMountedTerminals((prev) => {
+      if (!prev[terminalId]) return prev;
+      const next = { ...prev };
+      delete next[terminalId];
+      return next;
+    });
+  }, []);
+
+  const handleCloseShellTab = useCallback(async (tabId: string, shellId: string) => {
+    // Kill the PTY
+    try {
+      await fetch(`/api/shell/${shellId}`, { method: "DELETE" });
+    } catch {}
+
+    if (selectedNodeId) {
+      const updated = (shellTabsMap.get(selectedNodeId) || []).filter(t => t.id !== tabId);
+      setShellTabs(selectedNodeId, updated);
+    }
+
+    removeMountedTerminal(`shell:${shellId}`);
+
+    // Switch to agent tab if the closed tab was active
+    setActiveTerminalTab(prev => prev === tabId ? "agent" : prev);
+  }, [removeMountedTerminal, selectedNodeId, shellTabsMap, setShellTabs]);
+
+  const canFork = session?.agentId === "claude";
+
+  const handleFork = () => {
+    setForkDialogOpen(true);
+  };
+
+  const handleForkConfirm = async (opts: ForkDialogResult) => {
+    if (!selectedNodeId || !session) return;
+    const parentNode = nodes.find(n => n.id === selectedNodeId);
+    const parentPos = parentNode?.position || { x: 0, y: 0 };
+    const forkPos = { x: parentPos.x + 250, y: parentPos.y + 60 };
+
+    const res = await fetch(`/api/sessions/${session.sessionId}/fork`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        position: forkPos,
+        canvasId: activeCanvasId,
+        customName: opts.name,
+        customColor: opts.color,
+        ...(opts.cwd ? { cwd: opts.cwd } : {}),
+        ...(opts.branchName ? {
+          branchName: opts.branchName,
+          baseBranch: opts.baseBranch,
+        } : {}),
+        ...(opts.prNumber ? { prNumber: opts.prNumber } : {}),
+      }),
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+
+    const nodeData = parentNode?.data as any;
+    addNode({
+      id: data.nodeId,
+      type: "agent",
+      position: forkPos,
+      data: {
+        label: data.customName || opts.name || "Fork",
+        agentId: data.agentId || session.agentId,
+        color: data.customColor || opts.color || session.color,
+        icon: opts.icon || nodeData?.icon || "sparkles",
+        sessionId: data.sessionId,
+        canvasId: activeCanvasId,
+      },
+    });
+    addSession(data.nodeId, {
+      id: data.nodeId,
+      sessionId: data.sessionId,
+      agentId: data.agentId || session.agentId,
+      agentName: data.agentName || session.agentName,
+      command: session.command,
+      color: data.customColor || opts.color || session.color,
+      createdAt: new Date().toISOString(),
+      cwd: data.cwd || session.cwd,
+      gitBranch: data.gitBranch,
+      status: "running",
+      customName: data.customName,
+      customColor: data.customColor,
+    });
+    setSelectedNodeId(data.nodeId);
+    setForkDialogOpen(false);
+  };
+
   const displayColor = editColor || session?.customColor || session?.color || "#888";
-  const statusInfo = statusConfig[session?.status || "idle"];
   const isDisconnected = session?.status === "disconnected" || session?.isRestored;
 
+  useEffect(() => {
+    if (!session || !selectedNodeId) return;
+    upsertMountedTerminal({
+      id: `agent:${session.sessionId}`,
+      sessionId: session.sessionId,
+      nodeId: selectedNodeId,
+      color: displayColor,
+    });
+  }, [displayColor, selectedNodeId, session, upsertMountedTerminal]);
+
+  useEffect(() => {
+    if (!selectedNodeId) return;
+    for (const tab of shellTabs) {
+      upsertMountedTerminal({
+        id: `shell:${tab.shellId}`,
+        sessionId: tab.shellId,
+        nodeId: selectedNodeId,
+        color: "#888",
+        isShell: true,
+      });
+    }
+  }, [selectedNodeId, shellTabs, upsertMountedTerminal]);
+
+  useEffect(() => {
+    setMountedTerminals((prev) => {
+      const activeShellIds = new Set(
+        Array.from(shellTabsMap.values()).flat().map((tab) => tab.shellId)
+      );
+      const activeAgentSessionIds = new Set(
+        Array.from(sessions.values()).map((item) => item.sessionId)
+      );
+
+      let changed = false;
+      const next: Record<string, MountedTerminal> = {};
+      for (const [terminalId, terminal] of Object.entries(prev)) {
+        const keep = terminal.isShell
+          ? activeShellIds.has(terminal.sessionId)
+          : activeAgentSessionIds.has(terminal.sessionId);
+
+        if (keep) {
+          next[terminalId] = terminal;
+        } else {
+          changed = true;
+          // Release from pool when session/shell is removed
+          pool.release(terminalId);
+        }
+      }
+
+      return changed ? next : prev;
+    });
+  }, [sessions, shellTabsMap]);
+
+  const activeTerminalId = activeTerminalTab === "agent"
+    ? (session ? `agent:${session.sessionId}` : null)
+    : (() => {
+        const tab = shellTabs.find((item) => item.id === activeTerminalTab);
+        return tab ? `shell:${tab.shellId}` : null;
+      })();
+
+  // Eagerly include current session's terminal info so PooledTerminalMount
+  // has it on the same render cycle (useEffect-based upsert runs after render)
+  const effectiveTerminals = useMemo(() => {
+    if (!session || !selectedNodeId) return mountedTerminals;
+    const agentKey = `agent:${session.sessionId}`;
+    if (mountedTerminals[agentKey]) return mountedTerminals;
+    return {
+      ...mountedTerminals,
+      [agentKey]: {
+        id: agentKey,
+        sessionId: session.sessionId,
+        nodeId: selectedNodeId,
+        color: displayColor,
+      },
+    };
+  }, [mountedTerminals, session, selectedNodeId, displayColor]);
+
   return (
+    <>
     <AnimatePresence>
       {sidebarOpen && session && (
         <motion.div
+          ref={sidebarRef}
+          key="sidebar"
           initial={{ x: "100%", opacity: 0 }}
           animate={{ x: 0, opacity: 1 }}
           exit={{ x: "100%", opacity: 0 }}
-          transition={{ type: "spring", stiffness: 400, damping: 40 }}
-          className="fixed right-0 top-14 bottom-0 z-50 flex flex-col bg-canvas-dark border-l border-border"
-          style={{ width: sidebarWidth }}
+          transition={terminalMaximized ? { duration: 0 } : { type: "spring", stiffness: 400, damping: 40 }}
+          className={`fixed z-50 flex flex-col bg-canvas-dark ${terminalMaximized ? "inset-0" : "right-0 top-14 bottom-0 border-l border-border"}`}
+          style={terminalMaximized ? undefined : { width: `${sidebarWidth}vw` }}
         >
-          {/* Resize handle - wider hit area for easier grabbing */}
-          <div
-            onMouseDown={handleMouseDown}
-            className={`absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize hover:bg-zinc-500 transition-colors z-[100] ${isResizing ? "bg-zinc-500" : ""}`}
-          />
-          {/* Header */}
-          <div className="flex-shrink-0 px-4 py-3 border-b border-border">
-            <div className="flex items-center gap-3">
-              <div
-                className="w-3 h-3 rounded-full flex-shrink-0"
-                style={{ backgroundColor: displayColor }}
-              />
-              <div className="flex-1 min-w-0">
-                <h2 className="text-sm font-medium text-white truncate">
-                  {session.customName || session.agentName}
-                </h2>
-                <div className="flex items-center gap-2 mt-0.5">
+          {!terminalMaximized && (
+            <ResizeHandle
+              onResize={(widthPx) => {
+                const pct = (widthPx / window.innerWidth) * 100;
+                // Set DOM directly to bypass Framer Motion
+                if (sidebarRef.current) {
+                  sidebarRef.current.style.width = `${pct}vw`;
+                }
+                setSidebarWidth(pct);
+                localStorage.setItem("openui-sidebar-pct", pct.toString());
+              }}
+              initialWidth={sidebarWidth}
+              minWidth={320}
+            />
+          )}
+          {/* Header + Tab Row */}
+          <div className="flex-shrink-0 border-b border-border">
+            <div className="flex items-center px-3 py-1.5 gap-2">
+              {/* Node name — hidden when maximized */}
+              {!terminalMaximized && (
+                <>
                   <div
-                    className="w-1.5 h-1.5 rounded-full flex-shrink-0"
-                    style={{ backgroundColor: statusInfo.color }}
+                    className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                    style={{ backgroundColor: displayColor }}
                   />
-                  <span className="text-[10px] text-zinc-500">{statusInfo.label}</span>
-                </div>
-              </div>
-              
-              <div className="flex items-center gap-1 flex-shrink-0">
+                  <span className="text-xs font-medium text-primary truncate max-w-[120px] flex-shrink-0">
+                    {session.customName || session.agentName}
+                  </span>
+                </>
+              )}
+
+              {/* Terminal tabs */}
+              <div className="flex items-center overflow-x-auto flex-1 min-w-0 gap-0.5">
                 <button
-                  onClick={() => setIsEditing(!isEditing)}
-                  className={`w-7 h-7 rounded flex items-center justify-center transition-colors ${
-                    isEditing 
-                      ? "text-white bg-surface-active" 
-                      : "text-zinc-500 hover:text-white hover:bg-surface-active"
+                  onClick={() => setActiveTerminalTab("agent")}
+                  className={`flex items-center gap-1 px-2 py-1 text-xs whitespace-nowrap rounded transition-colors ${
+                    activeTerminalTab === "agent"
+                      ? "bg-elevated-half text-zinc-200"
+                      : "text-muted hover:text-tertiary"
                   }`}
                 >
-                  <Edit3 className="w-4 h-4" />
+                  <TerminalIcon className="w-3 h-3" />
+                  Agent
                 </button>
+
+                {shellTabs.map((tab, i) => (
+                  <div
+                    key={tab.id}
+                    className={`flex items-center gap-0.5 px-2 py-1 text-xs whitespace-nowrap rounded transition-colors group cursor-pointer ${
+                      activeTerminalTab === tab.id
+                        ? "bg-elevated-half text-zinc-200"
+                        : "text-muted hover:text-tertiary"
+                    }`}
+                    onClick={() => setActiveTerminalTab(tab.id)}
+                  >
+                    Shell {i + 1}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleCloseShellTab(tab.id, tab.shellId);
+                      }}
+                      className={`w-3.5 h-3.5 rounded flex items-center justify-center hover:bg-elevated-hover transition-all ml-0.5 ${
+                        activeTerminalTab === tab.id ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                      }`}
+                    >
+                      <X className="w-2.5 h-2.5" />
+                    </button>
+                  </div>
+                ))}
+
+                <button
+                  onClick={handleNewShellTab}
+                  className="flex items-center justify-center w-6 h-6 text-faint hover:text-tertiary transition-colors flex-shrink-0"
+                  title="New Terminal"
+                >
+                  <Plus className="w-3 h-3" />
+                </button>
+              </div>
+
+              {/* Right-side buttons */}
+              <div className="flex items-center gap-0.5 flex-shrink-0">
+                <button
+                  onClick={() => setTerminalMaximized(m => !m)}
+                  className="w-7 h-7 rounded flex items-center justify-center text-muted hover:text-primary hover:bg-surface-active transition-colors"
+                  title={terminalMaximized ? "Restore" : "Maximize"}
+                >
+                  {terminalMaximized ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+                </button>
+                {!terminalMaximized && (
+                  <button
+                    ref={menuButtonRef}
+                    onClick={() => setShowMenu(m => !m)}
+                    className={`w-7 h-7 rounded flex items-center justify-center transition-colors ${
+                      showMenu
+                        ? "text-primary bg-surface-active"
+                        : "text-muted hover:text-primary hover:bg-surface-active"
+                    }`}
+                    title="More actions"
+                  >
+                    <MoreHorizontal className="w-4 h-4" />
+                  </button>
+                )}
                 <button
                   onClick={handleClose}
-                  className="w-7 h-7 rounded flex items-center justify-center text-zinc-500 hover:text-white hover:bg-surface-active transition-colors"
+                  className="w-7 h-7 rounded flex items-center justify-center text-muted hover:text-primary hover:bg-surface-active transition-colors"
+                  title="Close panel"
                 >
-                  <X className="w-4 h-4" />
+                  <ChevronRight className="w-4 h-4" />
                 </button>
               </div>
             </div>
           </div>
 
           {/* Disconnected banner */}
-          {isDisconnected && (
+          {isDisconnected && !terminalMaximized && (
             <div className="flex-shrink-0 px-4 py-3 bg-red-500/10 border-b border-red-500/20">
               <div className="space-y-3">
                 <div>
@@ -222,8 +579,25 @@ export function Sidebar() {
                           method: "POST",
                         });
                         if (res.ok) {
-                          setTerminalKey(k => k + 1);
-                          updateSession(selectedNodeId!, { status: "running", isRestored: false });
+                          if (showArchived) {
+                            // Resuming from archived view — reload to show on active canvas
+                            window.location.reload();
+                          } else {
+                            // Force terminal refresh for the resumed session
+                            const terminalId = `agent:${session.sessionId}`;
+                            removeMountedTerminal(terminalId);
+                            requestAnimationFrame(() => {
+                              upsertMountedTerminal({
+                                id: terminalId,
+                                sessionId: session.sessionId,
+                                nodeId: selectedNodeId!,
+                                color: displayColor,
+                              });
+                            });
+                            updateSession(selectedNodeId!, { status: "running", isRestored: false });
+                          }
+                        } else {
+                          console.error("Failed to resume session: server returned", res.status);
                         }
                       } catch (e) {
                         console.error("Failed to resume session:", e);
@@ -236,7 +610,7 @@ export function Sidebar() {
                   </button>
                   <button
                     onClick={handleNewSession}
-                    className="flex-1 flex items-center justify-center gap-2 px-3 py-1.5 rounded-md bg-zinc-700 text-white text-sm font-medium hover:bg-zinc-600 transition-colors"
+                    className="flex-1 flex items-center justify-center gap-2 px-3 py-1.5 rounded-md bg-elevated text-primary text-sm font-medium hover:bg-elevated-hover transition-colors"
                   >
                     New Session
                   </button>
@@ -258,22 +632,9 @@ export function Sidebar() {
             </div>
           )}
 
-          {/* Session Management Controls */}
-          {!isDisconnected && !isEditing && session?.status !== "creating" && (
-            <div className="flex-shrink-0 px-4 py-2 border-b border-border">
-              <button
-                onClick={handleNewSession}
-                className="w-full flex items-center justify-center gap-2 px-3 py-1.5 rounded-md bg-surface-active text-zinc-300 text-xs font-medium hover:bg-zinc-700 transition-colors"
-              >
-                <RotateCcw className="w-3 h-3" />
-                New Session
-              </button>
-            </div>
-          )}
-
           {/* Edit Panel */}
           <AnimatePresence>
-            {isEditing && (
+            {isEditing && !terminalMaximized && (
               <motion.div
                 initial={{ height: 0, opacity: 0 }}
                 animate={{ height: "auto", opacity: 1 }}
@@ -282,7 +643,7 @@ export function Sidebar() {
               >
                 <div className="p-4 space-y-4">
                   <div>
-                    <label className="text-[10px] text-zinc-500 uppercase tracking-wider">Name</label>
+                    <label className="text-[10px] text-muted uppercase tracking-wider">Name</label>
                     <input
                       type="text"
                       value={editName}
@@ -306,12 +667,12 @@ export function Sidebar() {
                           }).catch(console.error);
                         }
                       }}
-                      className="mt-1 w-full px-3 py-2 rounded-md bg-canvas border border-border text-white text-sm focus:outline-none focus:border-zinc-500 transition-colors"
+                      className="mt-1 w-full px-3 py-2 rounded-md bg-canvas border border-border text-primary text-sm focus:outline-none focus:border-zinc-500 transition-colors"
                     />
                   </div>
-                  
+
                   <div>
-                    <label className="text-[10px] text-zinc-500 uppercase tracking-wider">Color</label>
+                    <label className="text-[10px] text-muted uppercase tracking-wider">Color</label>
                     <div className="mt-2 flex flex-wrap gap-2">
                       {presetColors.map((color) => (
                         <button
@@ -346,7 +707,7 @@ export function Sidebar() {
                   </div>
 
                   <div>
-                    <label className="text-[10px] text-zinc-500 uppercase tracking-wider">Icon</label>
+                    <label className="text-[10px] text-muted uppercase tracking-wider">Icon</label>
                     <div className="mt-2 flex flex-wrap gap-2">
                       {iconOptions.map(({ id, icon: IconComponent }) => (
                         <button
@@ -359,11 +720,19 @@ export function Sidebar() {
                                 data: { ...node.data, icon: id },
                               });
                             }
+                            // Persist to server
+                            if (session) {
+                              fetch(`/api/sessions/${session.sessionId}`, {
+                                method: "PATCH",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ icon: id }),
+                              }).catch(console.error);
+                            }
                           }}
                           className={`w-9 h-9 rounded-md transition-all flex items-center justify-center ${
                             editIcon === id
-                              ? "ring-2 ring-white ring-offset-2 ring-offset-canvas-dark scale-110 bg-white/10"
-                              : "hover:scale-110 hover:bg-white/5 bg-canvas"
+                              ? "ring-2 ring-white ring-offset-2 ring-offset-canvas-dark scale-110 bg-overlay-10"
+                              : "hover:scale-110 hover:bg-overlay-5 bg-canvas"
                           }`}
                           style={{ borderColor: editIcon === id ? editColor : "#333", borderWidth: '1px' }}
                         >
@@ -375,9 +744,9 @@ export function Sidebar() {
                       ))}
                     </div>
                   </div>
-                  
+
                   <div>
-                    <label className="text-[10px] text-zinc-500 uppercase tracking-wider">Notes</label>
+                    <label className="text-[10px] text-muted uppercase tracking-wider">Notes</label>
                     <textarea
                       value={editNotes}
                       onChange={(e) => {
@@ -398,7 +767,7 @@ export function Sidebar() {
                       }}
                       placeholder="Add notes..."
                       rows={2}
-                      className="mt-1 w-full px-3 py-2 rounded-md bg-canvas border border-border text-white text-sm placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors resize-none"
+                      className="mt-1 w-full px-3 py-2 rounded-md bg-canvas border border-border text-primary text-sm placeholder-faint focus:outline-none focus:border-zinc-500 transition-colors resize-none"
                     />
                   </div>
                 </div>
@@ -406,145 +775,86 @@ export function Sidebar() {
             )}
           </AnimatePresence>
 
-          {/* Terminal */}
+          {/* Terminal — pooled terminals swap DOM containers for instant switching */}
           <div className="flex-1 flex flex-col min-h-0">
-            <div className="flex-shrink-0 px-4 py-2 border-b border-border flex items-center justify-between">
-              <div className="flex items-center gap-1">
-                {layoutMode === "tabbed" ? (
-                  <>
-                    <button
-                      onClick={() => setActiveTab("claude")}
-                      className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs transition-colors ${
-                        activeTab === "claude"
-                          ? "bg-surface-active text-white"
-                          : "text-zinc-500 hover:text-zinc-300"
-                      }`}
-                    >
-                      <MessageSquare className="w-3 h-3" />
-                      Claude Log
-                    </button>
-                    <button
-                      onClick={() => setActiveTab("shell")}
-                      className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs transition-colors ${
-                        activeTab === "shell"
-                          ? "bg-surface-active text-white"
-                          : "text-zinc-500 hover:text-zinc-300"
-                      }`}
-                    >
-                      <TerminalIcon className="w-3 h-3" />
-                      Shell
-                    </button>
-                  </>
-                ) : (
-                  <span className="text-xs text-zinc-500">Claude Log + Shell</span>
-                )}
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => {
-                    const next = layoutMode === "tabbed" ? "split" : "tabbed";
-                    setLayoutMode(next);
-                    localStorage.setItem("openui-layout-mode", next);
-                  }}
-                  className="p-1 rounded text-zinc-500 hover:text-white hover:bg-surface-active transition-colors"
-                  title={layoutMode === "tabbed" ? "Split view" : "Tabbed view"}
-                >
-                  {layoutMode === "tabbed" ? (
-                    <Columns2 className="w-3.5 h-3.5" />
-                  ) : (
-                    <Rows2 className="w-3.5 h-3.5" />
-                  )}
-                </button>
-                <div className="flex items-center gap-1">
-                  <div className="w-2.5 h-2.5 rounded-full bg-[#FF5F56]" />
-                  <div className="w-2.5 h-2.5 rounded-full bg-[#FFBD2E]" />
-                  <div className="w-2.5 h-2.5 rounded-full bg-[#27CA40]" />
-                </div>
-              </div>
+            <div className="flex-1 min-h-0" style={{ backgroundColor: "var(--color-terminal-bg)" }}>
+              <PooledTerminalMount
+                terminalId={activeTerminalId}
+                terminals={effectiveTerminals}
+              />
             </div>
-
-            {layoutMode === "tabbed" ? (
-              <div className="flex-1 min-h-0 bg-[#0d0d0d] relative">
-                <div className={`absolute inset-0 ${activeTab === "claude" ? "" : "invisible"}`}>
-                  <Terminal
-                    key={`${session.sessionId}-${terminalKey}`}
-                    sessionId={session.sessionId}
-                    color={displayColor}
-                    nodeId={selectedNodeId!}
-                    isActive={activeTab === "claude"}
-                  />
-                </div>
-                <div className={`absolute inset-0 ${activeTab === "shell" ? "" : "invisible"}`}>
-                  <ShellTerminal
-                    key={`shell-${session.sessionId}`}
-                    sessionId={session.sessionId}
-                    cwd={session.cwd}
-                    color={displayColor}
-                    remote={session.remote}
-                  />
-                </div>
-              </div>
-            ) : (
-              <div className="flex-1 min-h-0 bg-[#0d0d0d] flex flex-row">
-                <div className="flex-1 min-w-0 min-h-0">
-                  <Terminal
-                    key={`${session.sessionId}-${terminalKey}`}
-                    sessionId={session.sessionId}
-                    color={displayColor}
-                    nodeId={selectedNodeId!}
-                    isActive
-                  />
-                </div>
-                <div className="w-px bg-zinc-700 flex-shrink-0" />
-                <div className="flex-1 min-w-0 min-h-0">
-                  <ShellTerminal
-                    key={`shell-${session.sessionId}`}
-                    sessionId={session.sessionId}
-                    cwd={session.cwd}
-                    color={displayColor}
-                    remote={session.remote}
-                  />
-                </div>
-              </div>
-            )}
 
           </div>
 
           {/* Details */}
-          <div className="flex-shrink-0 border-t border-border">
+          <div className={`flex-shrink-0 border-t border-border ${terminalMaximized ? "hidden" : ""}`}>
             <div className="p-4 space-y-2">
               {session.notes && !isEditing && (
-                <p className="text-xs text-zinc-400 italic mb-3 pb-3 border-b border-border">
+                <p className="text-xs text-tertiary italic mb-3 pb-3 border-b border-border">
                   {session.notes}
                 </p>
               )}
               <div className="flex items-center gap-2 text-xs">
-                <Clock className="w-3 h-3 text-zinc-600 flex-shrink-0" />
-                <span className="text-zinc-500">Started</span>
-                <span className="text-zinc-400 font-mono ml-auto">
+                <Clock className="w-3 h-3 text-faint flex-shrink-0" />
+                <span className="text-muted">Started</span>
+                <span className="text-tertiary font-mono ml-auto">
                   {new Date(session.createdAt).toLocaleTimeString()}
                 </span>
               </div>
               <div className="flex items-center gap-2 text-xs">
-                <Folder className="w-3 h-3 text-zinc-600 flex-shrink-0" />
-                <span className="text-zinc-500">Directory</span>
-                <span className="text-zinc-400 font-mono ml-auto truncate max-w-[180px]" title={session.cwd}>
+                <Folder className="w-3 h-3 text-faint flex-shrink-0" />
+                <span className="text-muted">Directory</span>
+                <span className="text-tertiary font-mono ml-auto truncate max-w-[180px]" title={session.cwd}>
                   {session.cwd.split('/').slice(-2).join('/')}
                 </span>
               </div>
+              {session.contextTokens != null && session.contextTokens > 0 && (() => {
+                const showContextBar = useStore.getState().showContextBar;
+                const usedK = Math.round(session.contextTokens / 1_000);
+                if (!showContextBar) {
+                  return (
+                    <div className="flex items-center gap-2 text-xs">
+                      <Zap className="w-3 h-3 text-faint flex-shrink-0" />
+                      <span className="text-muted">Context</span>
+                      <span className="text-tertiary font-mono ml-auto">{usedK}K tokens</span>
+                    </div>
+                  );
+                }
+                const maxTokens = getContextWindowSize(session.model);
+                const pct = Math.min(100, Math.round((session.contextTokens / maxTokens) * 100));
+                const maxK = Math.round(maxTokens / 1_000);
+                const color = pct >= 90 ? "bg-red-500" : pct >= 70 ? "bg-yellow-500" : "bg-emerald-500";
+                return (
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2 text-xs">
+                      <Zap className="w-3 h-3 text-faint flex-shrink-0" />
+                      <span className="text-muted">Context</span>
+                      <span className="text-tertiary font-mono ml-auto">
+                        {usedK}K / {maxK}K ({pct}%)
+                      </span>
+                    </div>
+                    <div className="h-1 rounded-full bg-zinc-800 overflow-hidden ml-5">
+                      <div
+                        className={`h-full rounded-full transition-all duration-500 ${color}`}
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                  </div>
+                );
+              })()}
               {session.gitBranch && (
                 <div className="flex items-center gap-2 text-xs">
-                  <GitBranch className="w-3 h-3 text-zinc-600 flex-shrink-0" />
-                  <span className="text-zinc-500">Branch</span>
+                  <GitBranch className="w-3 h-3 text-faint flex-shrink-0" />
+                  <span className="text-muted">Branch</span>
                   <span className="text-purple-400 font-mono ml-auto">
                     {session.gitBranch}
                   </span>
                 </div>
               )}
               <div className="flex items-center gap-2 text-xs pt-2 border-t border-border mt-2">
-                <span className="text-zinc-600 font-mono text-[10px]">ID</span>
+                <span className="text-faint font-mono text-[10px]">ID</span>
                 <span
-                  className="text-zinc-500 font-mono ml-auto text-[10px] cursor-pointer hover:text-zinc-300 truncate max-w-[180px]"
+                  className="text-muted font-mono ml-auto text-[10px] cursor-pointer hover:text-tertiary truncate max-w-[180px]"
                   title={`Click to copy: ${session.sessionId}`}
                   onClick={() => navigator.clipboard.writeText(session.sessionId)}
                 >
@@ -556,5 +866,108 @@ export function Sidebar() {
         </motion.div>
       )}
     </AnimatePresence>
+
+    {/* More actions dropdown menu */}
+    {showMenu && !terminalMaximized && createPortal(
+      <>
+        <div className="fixed inset-0 z-[9998]" onClick={() => setShowMenu(false)} />
+        <div
+          className="fixed z-[9999] min-w-[160px] rounded-lg border shadow-xl py-1"
+          style={{
+            top: menuButtonRef.current
+              ? menuButtonRef.current.getBoundingClientRect().bottom + 4
+              : 0,
+            right: menuButtonRef.current
+              ? window.innerWidth - menuButtonRef.current.getBoundingClientRect().right
+              : 0,
+            backgroundColor: "var(--color-menu-bg)",
+            borderColor: "var(--color-menu-border)",
+          }}
+        >
+          {!isDisconnected && (
+            <button
+              onClick={() => { handleNewSession(); setShowMenu(false); }}
+              className="w-full px-3 py-2 text-left text-xs text-secondary hover:bg-overlay-5 flex items-center gap-2"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              New Session
+            </button>
+          )}
+          <button
+            onClick={() => { setIsEditing(!isEditing); setShowMenu(false); }}
+            className="w-full px-3 py-2 text-left text-xs text-secondary hover:bg-overlay-5 flex items-center gap-2"
+          >
+            <Edit3 className="w-3.5 h-3.5" />
+            Edit
+          </button>
+          {canFork && (
+            <button
+              onClick={() => { handleFork(); setShowMenu(false); }}
+              className="w-full px-3 py-2 text-left text-xs text-secondary hover:bg-overlay-5 flex items-center gap-2"
+            >
+              <GitFork className="w-3.5 h-3.5" />
+              Fork
+            </button>
+          )}
+          {showArchived ? (
+            <button
+              onClick={() => {
+                if (selectedNodeId) {
+                  unarchiveSession(selectedNodeId);
+                  handleClose();
+                }
+                setShowMenu(false);
+              }}
+              className="w-full px-3 py-2 text-left text-xs text-secondary hover:bg-overlay-5 flex items-center gap-2"
+            >
+              <Archive className="w-3.5 h-3.5" />
+              Unarchive
+            </button>
+          ) : (
+            <button
+              onClick={() => {
+                if (selectedNodeId) {
+                  setDeleteDialogOpen(true);
+                }
+                setShowMenu(false);
+              }}
+              className="w-full px-3 py-2 text-left text-xs text-red-400 hover:bg-overlay-5 flex items-center gap-2"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              Delete
+            </button>
+          )}
+        </div>
+      </>,
+      document.body
+    )}
+
+    {session && (
+      <ForkDialog
+        open={forkDialogOpen}
+        onClose={() => setForkDialogOpen(false)}
+        parentName={session.customName || session.agentName || "Agent"}
+        parentColor={session.customColor || session.color || "#22C55E"}
+        parentIcon={(node?.data as any)?.icon || "sparkles"}
+        parentCwd={session.cwd || ""}
+        onConfirm={handleForkConfirm}
+      />
+    )}
+    {session && (
+      <DeleteConfirmDialog
+        open={deleteDialogOpen}
+        onClose={() => setDeleteDialogOpen(false)}
+        sessionId={session.sessionId}
+        sessionName={session.customName || session.agentName || "Agent"}
+        onConfirm={async (cleanup) => {
+          if (!selectedNodeId) return;
+          await deleteSessionWithCleanup(selectedNodeId, session.sessionId, cleanup);
+          setSelectedNodeId(null);
+          setDeleteDialogOpen(false);
+          handleClose();
+        }}
+      />
+    )}
+    </>
   );
 }

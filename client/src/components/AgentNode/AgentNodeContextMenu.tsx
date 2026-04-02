@@ -1,20 +1,26 @@
 import { createPortal } from "react-dom";
-import { Trash2 } from "lucide-react";
+import { Trash2, GitFork, Archive } from "lucide-react";
 
 interface AgentNodeContextMenuProps {
   position: { x: number; y: number };
   onClose: () => void;
   onDelete: () => void;
+  onFork?: () => void;
+  onArchive?: () => void;
+  showFork?: boolean;
 }
 
 export function AgentNodeContextMenu({
   position,
   onClose,
   onDelete,
+  onFork,
+  onArchive,
+  showFork,
 }: AgentNodeContextMenuProps) {
   return createPortal(
     <>
-      {/* Transparent backdrop to catch clicks outside the menu */}
+      {/* Preserve local: Transparent backdrop to catch clicks outside the menu */}
       <div
         className="fixed inset-0 z-[9998]"
         onClick={(e) => {
@@ -36,13 +42,36 @@ export function AgentNodeContextMenu({
           borderColor: "#333",
         }}
       >
+        {showFork && onFork && (
+          <button
+            onClick={() => {
+              onFork();
+              onClose();
+            }}
+            className="w-full px-3 py-2 text-left text-xs text-secondary hover:bg-overlay-5 flex items-center gap-2"
+          >
+            <GitFork className="w-3.5 h-3.5" />
+            Fork
+          </button>
+        )}
+        {onArchive && (
+          <button
+            onClick={() => {
+              onArchive();
+            }}
+            className="w-full px-3 py-2 text-left text-xs text-amber-400 hover:bg-overlay-5 flex items-center gap-2"
+          >
+            <Archive className="w-3.5 h-3.5" />
+            Archive
+          </button>
+        )}
         <button
           onClick={(e) => {
             e.stopPropagation();
             onDelete();
             onClose();
           }}
-          className="w-full px-3 py-2 text-left text-xs text-red-400 hover:bg-white/5 flex items-center gap-2"
+          className="w-full px-3 py-2 text-left text-xs text-red-400 hover:bg-overlay-5 flex items-center gap-2"
         >
           <Trash2 className="w-3.5 h-3.5" />
           Delete

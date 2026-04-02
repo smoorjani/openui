@@ -25,6 +25,8 @@ const statusConfig: Record<AgentStatus, { label: string; color: string }> = {
   idle: { label: "Idle", color: "#FBBF24" },
   disconnected: { label: "Disconnected", color: "#EF4444" },
   error: { label: "Error", color: "#EF4444" },
+  waiting: { label: "Waiting", color: "#FBBF24" },
+  compacting: { label: "Compacting", color: "#A855F7" },
 };
 
 interface TaskDetailPanelProps {
