@@ -238,7 +238,7 @@ apiRoutes.get("/cli-info", (c) => {
 });
 
 apiRoutes.get("/remotes", (c) => {
-  return c.json(Object.keys(REMOTE_HOSTS));
+  return c.json(Object.keys(getRemoteHosts()));
 });
 
 apiRoutes.get("/sessions", (c) => {

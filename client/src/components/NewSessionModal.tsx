@@ -258,6 +258,7 @@ export function NewSessionModal({
         })
         .catch(() => {});
 
+
       if (existingSession) {
         // Pre-fill from existing session
         const agent = agents.find((a) => a.id === existingSession.agentId);
