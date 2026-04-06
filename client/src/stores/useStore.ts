@@ -140,6 +140,8 @@ interface AppState {
   setNewSessionModalOpen: (open: boolean) => void;
   newSessionForNodeId: string | null;
   setNewSessionForNodeId: (nodeId: string | null) => void;
+  newAgentTargetCategoryId: string | null;
+  setNewAgentTargetCategoryId: (id: string | null) => void;
   worktreeModalOpen: boolean;
   setWorktreeModalOpen: (open: boolean) => void;
 
@@ -433,6 +435,8 @@ export const useStore = create<AppState>((set) => ({
   setNewSessionModalOpen: (open) => set({ newSessionModalOpen: open }),
   newSessionForNodeId: null,
   setNewSessionForNodeId: (nodeId) => set({ newSessionForNodeId: nodeId }),
+  newAgentTargetCategoryId: null,
+  setNewAgentTargetCategoryId: (id) => set({ newAgentTargetCategoryId: id }),
   worktreeModalOpen: false,
   setWorktreeModalOpen: (open) => set({ worktreeModalOpen: open }),
 

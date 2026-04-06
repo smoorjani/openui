@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo } from "react";
-import { ChevronDown, ChevronRight, Plus, Trash2, Edit3 } from "lucide-react";
+import { ChevronDown, ChevronRight, Plus, Trash2, Edit3, Bot } from "lucide-react";
 import { useStore, type ListSection } from "../../stores/useStore";
 import { TaskItem } from "./TaskItem";
 
@@ -9,7 +9,7 @@ interface TaskListProps {
 }
 
 export function TaskList({ selectedNodeId, onSelect }: TaskListProps) {
-  const { sessions, listSections, addListSection, updateListSection, removeListSection, updateSession } = useStore();
+  const { sessions, listSections, addListSection, updateListSection, removeListSection, updateSession, setAddAgentModalOpen, setNewAgentTargetCategoryId } = useStore();
   const [showAddForm, setShowAddForm] = useState(false);
   const [newLabel, setNewLabel] = useState("");
   const [newColor, setNewColor] = useState("#3B82F6");
@@ -75,6 +75,12 @@ export function TaskList({ selectedNodeId, onSelect }: TaskListProps) {
       }
     });
     removeListSection(id);
+    setSectionContextMenu(null);
+  };
+
+  const handleNewAgentInSection = (sectionId: string) => {
+    setNewAgentTargetCategoryId(sectionId);
+    setAddAgentModalOpen(true);
     setSectionContextMenu(null);
   };
 
@@ -358,6 +364,13 @@ export function TaskList({ selectedNodeId, onSelect }: TaskListProps) {
             className="fixed z-50 w-40 bg-surface border border-border rounded-lg shadow-xl py-1"
             style={{ left: sectionContextMenu.x, top: sectionContextMenu.y }}
           >
+            <button
+              onClick={() => handleNewAgentInSection(sectionContextMenu.id)}
+              className="w-full px-3 py-1.5 text-left text-xs text-zinc-300 hover:bg-white/5 flex items-center gap-2"
+            >
+              <Bot className="w-3 h-3" />
+              New Agent
+            </button>
             <button
               onClick={() => handleStartEdit(sectionContextMenu.id)}
               className="w-full px-3 py-1.5 text-left text-xs text-zinc-300 hover:bg-white/5 flex items-center gap-2"

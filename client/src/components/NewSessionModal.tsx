@@ -48,6 +48,7 @@ interface NewSessionModalProps {
   // If provided, we're replacing an existing session on this node
   existingSession?: AgentSession;
   existingNodeId?: string;
+  targetCategoryId?: string;
 }
 
 interface ClaudeConversation {
@@ -146,6 +147,7 @@ export function NewSessionModal({
   onClose,
   existingSession,
   existingNodeId,
+  targetCategoryId,
 }: NewSessionModalProps) {
   const {
     agents,
@@ -611,6 +613,7 @@ export function NewSessionModal({
             customName: count > 1 ? agentName : customName || undefined,
             ticketId: i === 0 ? (selectedGithubIssue ? `#${selectedGithubIssue.number}` : undefined) : undefined,
             ticketTitle: i === 0 ? selectedGithubIssue?.title : undefined,
+            categoryId: targetCategoryId || undefined,
           });
 
           pendingNodes.push({ nodeId, agentName, index: i });
@@ -645,6 +648,7 @@ export function NewSessionModal({
                   baseBranch,
                 }),
                 ...(i === 0 && prNumber && { prNumber }),
+                ...(targetCategoryId && { categoryId: targetCategoryId }),
               }),
             });
 
