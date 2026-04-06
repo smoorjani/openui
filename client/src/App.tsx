@@ -193,6 +193,8 @@ function AppContent() {
     setNewSessionModalOpen,
     newSessionForNodeId,
     setNewSessionForNodeId,
+    newAgentTargetCategoryId,
+    setNewAgentTargetCategoryId,
     sessions,
     showArchived,
     activeCanvasId,
@@ -1176,9 +1178,11 @@ function AppContent() {
           setAddAgentModalOpen(false);
           setNewSessionModalOpen(false);
           setNewSessionForNodeId(null);
+          setNewAgentTargetCategoryId(null);
         }}
         existingSession={newSessionForNodeId ? sessions.get(newSessionForNodeId) : undefined}
         existingNodeId={newSessionForNodeId || undefined}
+        targetCategoryId={newAgentTargetCategoryId || undefined}
       />
 
       <ToastContainer />

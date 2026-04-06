@@ -1,6 +1,8 @@
 import { useState, useRef } from "react";
 import { GripVertical, Calendar, Trash2, ArrowRight, Edit3 } from "lucide-react";
 import { useStore, AgentStatus, ListSection } from "../../stores/useStore";
+import { DeleteConfirmDialog } from "../DeleteConfirmDialog";
+import { deleteSessionWithCleanup } from "../../utils/deleteSession";
 
 const statusConfig: Record<AgentStatus, { label: string; color: string }> = {
   creating: { label: "Creating", color: "#3B82F6" },
@@ -41,6 +43,7 @@ export function TaskItem({ nodeId, onSelect, isSelected, onDragStart }: TaskItem
   const [showMoveMenu, setShowMoveMenu] = useState(false);
   const [isRenaming, setIsRenaming] = useState(false);
   const [renameName, setRenameName] = useState("");
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const dateRef = useRef<HTMLInputElement>(null);
 
   if (!session) return null;
@@ -103,10 +106,7 @@ export function TaskItem({ nodeId, onSelect, isSelected, onDragStart }: TaskItem
 
   const handleDelete = () => {
     closeContextMenu();
-    // Remove from UI immediately, then tell server to clean up
-    useStore.getState().removeSession(nodeId);
-    useStore.getState().removeNode(nodeId);
-    fetch(`/api/sessions/${session.sessionId}`, { method: "DELETE" }).catch(console.error);
+    setDeleteDialogOpen(true);
   };
 
   return (
@@ -171,6 +171,17 @@ export function TaskItem({ nodeId, onSelect, isSelected, onDragStart }: TaskItem
           </span>
         </div>
       </div>
+
+      <DeleteConfirmDialog
+        open={deleteDialogOpen}
+        onClose={() => setDeleteDialogOpen(false)}
+        sessionId={session.sessionId}
+        sessionName={displayName}
+        onConfirm={async (cleanup) => {
+          await deleteSessionWithCleanup(nodeId, session.sessionId, cleanup);
+          setDeleteDialogOpen(false);
+        }}
+      />
 
       {/* Context menu */}
       {contextMenu && (
