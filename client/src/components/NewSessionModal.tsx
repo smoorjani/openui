@@ -244,7 +244,12 @@ export function NewSessionModal({
         .then((res) => res.json())
         .then((info) => {
           setHasIsaac(info.hasIsaac);
-          setCliMode(info.hasIsaac ? "isaac" : "claude");
+          const savedCliMode = localStorage.getItem("openui-last-cli-mode") as "isaac" | "claude" | null;
+          if (savedCliMode && (savedCliMode !== "isaac" || info.hasIsaac)) {
+            setCliMode(savedCliMode);
+          } else {
+            setCliMode(info.hasIsaac ? "isaac" : "claude");
+          }
         })
         .catch(() => {});
 
@@ -270,8 +275,10 @@ export function NewSessionModal({
         setCommandArgs("");
         setCount(1);
       } else {
-        setSelectedAgent(null);
-        setCwd("");
+        const lastAgentId = localStorage.getItem("openui-last-agent-id");
+        const lastAgent = lastAgentId ? agents.find((a) => a.id === lastAgentId) : null;
+        setSelectedAgent(lastAgent || null);
+        setCwd(localStorage.getItem("openui-last-cwd") || "");
         setCustomName("");
         setCommandArgs("");
         setCount(1);
@@ -464,6 +471,12 @@ export function NewSessionModal({
     if (!selectedAgent) return;
 
     setIsCreating(true);
+
+    // Persist selections for next time
+    const effectiveCwdForSave = cwd || (isReplacing ? existingSession?.cwd : null) || launchCwd;
+    if (effectiveCwdForSave) localStorage.setItem("openui-last-cwd", effectiveCwdForSave);
+    localStorage.setItem("openui-last-cli-mode", cliMode);
+    localStorage.setItem("openui-last-agent-id", selectedAgent.id);
 
     try {
       // When resuming, always use the conversation's project path
