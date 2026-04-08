@@ -172,6 +172,17 @@ function ImageToastContainer() {
   );
 }
 
+const CATEGORY_ID_REMAP: Record<string, string> = {
+  "todo": "backlog-new",
+  "on-hold": "backlog-on-hold",
+  "oncall-waiting": "backlog-on-hold",
+  "oncall-todo": "backlog-new",
+};
+function migrateCategoryId(id: string | undefined): string | undefined {
+  if (!id) return id;
+  return CATEGORY_ID_REMAP[id] || id;
+}
+
 function AppContent() {
   const {
     nodes: storeNodes,
@@ -754,7 +765,7 @@ function AppContent() {
             isRestored: session.isRestored,
             ticketId: session.ticketId,
             ticketTitle: session.ticketTitle,
-            categoryId: session.categoryId,
+            categoryId: migrateCategoryId(session.categoryId),
             sortOrder: session.sortOrder,
             dueDate: session.dueDate,
             remote: session.remote,
@@ -861,6 +872,10 @@ function AppContent() {
             isRestored: session.isRestored,
             ticketId: session.ticketId,
             ticketTitle: session.ticketTitle,
+            categoryId: migrateCategoryId(session.categoryId),
+            sortOrder: session.sortOrder,
+            dueDate: session.dueDate,
+            archived: session.archived,
           });
         });
 
