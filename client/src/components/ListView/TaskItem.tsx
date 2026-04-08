@@ -1,6 +1,6 @@
 import { useState, useRef } from "react";
-import { GripVertical, Calendar, Trash2, ArrowRight, Edit3 } from "lucide-react";
-import { useStore, AgentStatus, ListSection } from "../../stores/useStore";
+import { GripVertical, Calendar, Trash2, ArrowRight, Edit3, Archive, ArchiveRestore } from "lucide-react";
+import { useStore, AgentStatus } from "../../stores/useStore";
 import { DeleteConfirmDialog } from "../DeleteConfirmDialog";
 import { deleteSessionWithCleanup } from "../../utils/deleteSession";
 
@@ -14,6 +14,19 @@ const statusConfig: Record<AgentStatus, { label: string; color: string }> = {
   error: { label: "Error", color: "#EF4444" },
   waiting: { label: "Waiting", color: "#FBBF24" },
   compacting: { label: "Compacting", color: "#A855F7" },
+};
+
+const WORKSPACE_OPTIONS = [
+  { id: "sprint", label: "Sprint", color: "#F97316" },
+  { id: "oncall", label: "On Call", color: "#06B6D4" },
+  { id: "backlog", label: "Backlog", color: "#FBBF24" },
+];
+
+// Default "landing" section for each workspace when moving
+const WORKSPACE_DEFAULT_SECTION: Record<string, string> = {
+  sprint: "in-progress",
+  oncall: "oncall-in-progress",
+  backlog: "backlog-new",
 };
 
 function relativeDueDate(iso: string): { text: string; overdue: boolean } {
@@ -36,7 +49,7 @@ interface TaskItemProps {
 }
 
 export function TaskItem({ nodeId, onSelect, isSelected, onDragStart }: TaskItemProps) {
-  const { sessions, updateSession, listSections } = useStore();
+  const { sessions, updateSession, listSections, archiveSession, unarchiveSession } = useStore();
   const session = sessions.get(nodeId);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [showDatePicker, setShowDatePicker] = useState(false);
@@ -51,6 +64,10 @@ export function TaskItem({ nodeId, onSelect, isSelected, onDragStart }: TaskItem
   const status = statusConfig[session.status || "idle"];
   const displayName = session.customName || session.agentName;
   const dueDateInfo = session.dueDate ? relativeDueDate(session.dueDate) : null;
+
+  // Determine which workspace this session is currently in
+  const currentSection = listSections.find((s) => s.id === session.categoryId);
+  const currentWorkspace = currentSection?.workspace;
 
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -73,12 +90,15 @@ export function TaskItem({ nodeId, onSelect, isSelected, onDragStart }: TaskItem
     closeContextMenu();
   };
 
-  const handleMoveToSection = (sectionId: string | null) => {
-    updateSession(nodeId, { categoryId: sectionId || undefined });
+  const handleMoveToWorkspace = (e: React.MouseEvent, workspaceId: string) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const targetSectionId = WORKSPACE_DEFAULT_SECTION[workspaceId] || null;
+    updateSession(nodeId, { categoryId: targetSectionId || undefined });
     fetch(`/api/sessions/${session.sessionId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ categoryId: sectionId }),
+      body: JSON.stringify({ categoryId: targetSectionId }),
     }).catch(console.error);
     closeContextMenu();
   };
@@ -102,6 +122,16 @@ export function TaskItem({ nodeId, onSelect, isSelected, onDragStart }: TaskItem
       body: JSON.stringify({ customName: customName ?? null }),
     }).catch(console.error);
     setIsRenaming(false);
+  };
+
+  const handleArchive = () => {
+    closeContextMenu();
+    archiveSession(nodeId);
+  };
+
+  const handleUnarchive = () => {
+    closeContextMenu();
+    unarchiveSession(nodeId);
   };
 
   const handleDelete = () => {
@@ -138,7 +168,10 @@ export function TaskItem({ nodeId, onSelect, isSelected, onDragStart }: TaskItem
               autoFocus
             />
           ) : (
-            <div className="text-sm text-zinc-200 truncate">{displayName}</div>
+            <div className="text-sm text-zinc-200 truncate flex items-center gap-1.5">
+              {session.archived && <Archive className="w-3 h-3 text-orange-400 flex-shrink-0" />}
+              {displayName}
+            </div>
           )}
           {session.gitBranch && (
             <span className="text-[10px] text-zinc-600 font-mono truncate block mt-0.5">
@@ -188,7 +221,7 @@ export function TaskItem({ nodeId, onSelect, isSelected, onDragStart }: TaskItem
         <>
           <div className="fixed inset-0 z-50" onClick={closeContextMenu} />
           <div
-            className="fixed z-50 w-48 bg-surface border border-border rounded-lg shadow-xl py-1"
+            className="fixed z-[51] w-48 bg-surface border border-border rounded-lg shadow-xl py-1"
             style={{ left: contextMenu.x, top: contextMenu.y }}
           >
             <button
@@ -230,32 +263,43 @@ export function TaskItem({ nodeId, onSelect, isSelected, onDragStart }: TaskItem
               className="w-full px-3 py-1.5 text-left text-xs text-zinc-300 hover:bg-white/5 flex items-center gap-2"
             >
               <ArrowRight className="w-3 h-3" />
-              Move to section
+              Move to workspace
             </button>
             {showMoveMenu && (
               <div className="border-t border-border mt-1 pt-1">
-                {listSections.map((sec: ListSection) => (
+                {WORKSPACE_OPTIONS.filter((ws) => ws.id !== currentWorkspace).map((ws) => (
                   <button
-                    key={sec.id}
-                    onClick={() => handleMoveToSection(sec.id)}
+                    key={ws.id}
+                    onClick={(e) => handleMoveToWorkspace(e, ws.id)}
                     className="w-full px-4 py-1.5 text-left text-xs text-zinc-300 hover:bg-white/5 flex items-center gap-2"
                   >
                     <div
                       className="w-2 h-2 rounded-full"
-                      style={{ backgroundColor: sec.color }}
+                      style={{ backgroundColor: ws.color }}
                     />
-                    {sec.label}
+                    {ws.label}
                   </button>
                 ))}
-                <button
-                  onClick={() => handleMoveToSection(null)}
-                  className="w-full px-4 py-1.5 text-left text-xs text-zinc-400 hover:bg-white/5"
-                >
-                  Uncategorized
-                </button>
               </div>
             )}
             <div className="border-t border-border mt-1 pt-1">
+              {session.archived ? (
+                <button
+                  onClick={handleUnarchive}
+                  className="w-full px-3 py-1.5 text-left text-xs text-zinc-300 hover:bg-white/5 flex items-center gap-2"
+                >
+                  <ArchiveRestore className="w-3 h-3" />
+                  Unarchive
+                </button>
+              ) : (
+                <button
+                  onClick={handleArchive}
+                  className="w-full px-3 py-1.5 text-left text-xs text-zinc-300 hover:bg-white/5 flex items-center gap-2"
+                >
+                  <Archive className="w-3 h-3" />
+                  Archive
+                </button>
+              )}
               <button
                 onClick={handleDelete}
                 className="w-full px-3 py-1.5 text-left text-xs text-red-400 hover:bg-red-500/10 flex items-center gap-2"

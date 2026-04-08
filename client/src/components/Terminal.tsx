@@ -533,8 +533,13 @@ export function Terminal({ sessionId, color, nodeId, isActive = true, isShell }:
   // Refocus terminal when it becomes the active tab
   useEffect(() => {
     if (isActive && xtermRef.current) {
+      // Immediate focus + delayed retry to ensure xterm's textarea gets focus
+      // after React re-render and any layout shifts
       xtermRef.current.focus();
       fitAddonRef.current?.fit();
+      setTimeout(() => {
+        if (xtermRef.current) xtermRef.current.focus();
+      }, 50);
     }
   }, [isActive]);
 

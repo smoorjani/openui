@@ -2,6 +2,7 @@ import { useState, useCallback, useMemo } from "react";
 import { ChevronDown, ChevronRight, Plus, Trash2, Edit3, Bot } from "lucide-react";
 import { useStore, type ListSection } from "../../stores/useStore";
 import { TaskItem } from "./TaskItem";
+import { WorkspaceTabs } from "../WorkspaceTabs";
 
 interface TaskListProps {
   selectedNodeId: string | null;
@@ -9,35 +10,35 @@ interface TaskListProps {
 }
 
 export function TaskList({ selectedNodeId, onSelect }: TaskListProps) {
-  const { sessions, listSections, addListSection, updateListSection, removeListSection, updateSession, setAddAgentModalOpen, setNewAgentTargetCategoryId } = useStore();
+  const { sessions, listSections, addListSection, updateListSection, removeListSection, updateSession, setAddAgentModalOpen, setNewAgentTargetCategoryId, activeWorkspace } = useStore();
   const [showAddForm, setShowAddForm] = useState(false);
   const [newLabel, setNewLabel] = useState("");
   const [newColor, setNewColor] = useState("#3B82F6");
-  const [newGroup, setNewGroup] = useState<"sprint" | "oncall">("sprint");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editLabel, setEditLabel] = useState("");
   const [sectionContextMenu, setSectionContextMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [dragOverSection, setDragOverSection] = useState<string | null>(null);
 
-  const allSessions = Array.from(sessions.entries());
-
-  const sprintSections = useMemo(
-    () => listSections.filter((s) => s.group !== "oncall"),
-    [listSections]
-  );
-  const oncallSections = useMemo(
-    () => listSections.filter((s) => s.group === "oncall"),
-    [listSections]
+  const allSessions = Array.from(sessions.entries()).filter(
+    ([, s]) => s.agentName !== "Orchestrator"
   );
 
-  const sessionsForSection = (sectionId: string) =>
-    allSessions
-      .filter(([, s]) => s.categoryId === sectionId)
-      .sort(([, a], [, b]) => (a.sortOrder ?? 999) - (b.sortOrder ?? 999));
-
-  const uncategorized = allSessions.filter(
-    ([, s]) => !s.categoryId || !listSections.find((sec) => sec.id === s.categoryId)
+  const workspaceSections = useMemo(
+    () => listSections.filter((s) => s.workspace === activeWorkspace),
+    [listSections, activeWorkspace]
   );
+  // Uncategorized sessions count as backlog-new
+  const sessionsForSection = (sectionId: string) => {
+    const direct = allSessions.filter(([, s]) => s.categoryId === sectionId);
+    // backlog-new also absorbs uncategorized sessions
+    if (sectionId === "backlog-new") {
+      const uncategorized = allSessions.filter(
+        ([, s]) => !s.categoryId || !listSections.find((sec) => sec.id === s.categoryId)
+      );
+      return [...direct, ...uncategorized].sort(([, a], [, b]) => (a.sortOrder ?? 999) - (b.sortOrder ?? 999));
+    }
+    return direct.sort(([, a], [, b]) => (a.sortOrder ?? 999) - (b.sortOrder ?? 999));
+  };
 
   const handleAddSection = () => {
     if (!newLabel.trim()) return;
@@ -45,11 +46,10 @@ export function TaskList({ selectedNodeId, onSelect }: TaskListProps) {
       id: `section-${Date.now()}`,
       label: newLabel.trim(),
       color: newColor,
-      group: newGroup,
+      workspace: activeWorkspace as "sprint" | "oncall" | "backlog",
     });
     setNewLabel("");
     setNewColor("#3B82F6");
-    setNewGroup("sprint");
     setShowAddForm(false);
   };
 
@@ -216,70 +216,16 @@ export function TaskList({ selectedNodeId, onSelect }: TaskListProps) {
 
   return (
     <div className="h-full flex flex-col bg-canvas-dark">
+      {/* Workspace tabs */}
+      <div className="flex-shrink-0 px-3 pt-2 pb-1 border-b border-border">
+        <WorkspaceTabs />
+      </div>
+
       <div className="flex-1 overflow-y-auto p-3 space-y-1">
-        {/* Sprint group */}
-        {sprintSections.length > 0 && (
-          <>
-            <div className="flex items-center gap-2 px-2 pt-1 pb-2">
-              <div className="h-px flex-1 bg-gradient-to-r from-orange-500/40 to-transparent" />
-              <span className="text-[10px] font-semibold text-orange-400/70 uppercase tracking-widest">
-                Sprint
-              </span>
-              <div className="h-px flex-1 bg-gradient-to-l from-orange-500/40 to-transparent" />
-            </div>
-            {sprintSections.map(renderSection)}
-          </>
-        )}
+        {/* Active workspace sections */}
+        {workspaceSections.map(renderSection)}
 
-        {/* Oncall group */}
-        {oncallSections.length > 0 && (
-          <>
-            <div className="flex items-center gap-2 px-2 pt-3 pb-2">
-              <div className="h-px flex-1 bg-gradient-to-r from-cyan-500/40 to-transparent" />
-              <span className="text-[10px] font-semibold text-cyan-400/70 uppercase tracking-widest">
-                Oncall
-              </span>
-              <div className="h-px flex-1 bg-gradient-to-l from-cyan-500/40 to-transparent" />
-            </div>
-            {oncallSections.map(renderSection)}
-          </>
-        )}
 
-        {/* Uncategorized */}
-        {uncategorized.length > 0 && (
-          <div className="mb-2">
-            <div
-              className={`flex items-center gap-2 px-2 py-1.5 rounded-md transition-colors ${
-                dragOverSection === "__uncategorized" ? "bg-white/10" : ""
-              }`}
-              onDragOver={(e) => handleDragOver(e, "__uncategorized")}
-              onDragLeave={handleDragLeave}
-              onDrop={(e) => handleDrop(e, null)}
-            >
-              <ChevronDown className="w-3 h-3 text-zinc-600" />
-              <span className="flex-1 text-xs font-medium text-zinc-500 uppercase tracking-wider">
-                Uncategorized
-              </span>
-              <span className="text-[10px] text-zinc-600 tabular-nums">{uncategorized.length}</span>
-            </div>
-            <div
-              className="ml-2 mt-0.5 space-y-0.5"
-              onDragOver={(e) => handleDragOver(e, "__uncategorized")}
-              onDragLeave={handleDragLeave}
-              onDrop={(e) => handleDrop(e, null)}
-            >
-              {uncategorized.map(([nodeId]) => (
-                <TaskItem
-                  key={nodeId}
-                  nodeId={nodeId}
-                  onSelect={onSelect}
-                  isSelected={selectedNodeId === nodeId}
-                  onDragStart={handleDragStart}
-                />
-              ))}
-            </div>
-          </div>
-        )}
       </div>
 
       {/* Add section */}
@@ -305,29 +251,6 @@ export function TaskList({ selectedNodeId, onSelect }: TaskListProps) {
                   style={{ backgroundColor: c }}
                 />
               ))}
-            </div>
-            {/* Group toggle */}
-            <div className="flex gap-1">
-              <button
-                onClick={() => setNewGroup("sprint")}
-                className={`flex-1 px-2 py-1 rounded text-[10px] font-medium uppercase tracking-wider transition-colors ${
-                  newGroup === "sprint"
-                    ? "bg-orange-500/20 text-orange-400 border border-orange-500/30"
-                    : "text-zinc-500 hover:text-zinc-300 border border-transparent"
-                }`}
-              >
-                Sprint
-              </button>
-              <button
-                onClick={() => setNewGroup("oncall")}
-                className={`flex-1 px-2 py-1 rounded text-[10px] font-medium uppercase tracking-wider transition-colors ${
-                  newGroup === "oncall"
-                    ? "bg-cyan-500/20 text-cyan-400 border border-cyan-500/30"
-                    : "text-zinc-500 hover:text-zinc-300 border border-transparent"
-                }`}
-              >
-                Oncall
-              </button>
             </div>
             <div className="flex gap-2">
               <button

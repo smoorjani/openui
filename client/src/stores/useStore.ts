@@ -73,7 +73,7 @@ export interface ListSection {
   label: string;
   color: string;
   collapsed?: boolean;
-  group?: "sprint" | "oncall";
+  workspace?: "sprint" | "oncall" | "backlog";
 }
 
 interface AppState {
@@ -86,6 +86,10 @@ interface AppState {
   // UI Mode
   uiMode: "canvas" | "list" | "focus";
   setUiMode: (mode: "canvas" | "list" | "focus") => void;
+
+  // Workspace
+  activeWorkspace: string;
+  setActiveWorkspace: (id: string) => void;
 
   // Focus view
   focusSessions: string[];
@@ -228,35 +232,107 @@ interface AppState {
 }
 
 const DEFAULT_LIST_SECTIONS: ListSection[] = [
-  { id: "pinned", label: "Pinned", color: "#F97316", group: "sprint" },
-  { id: "todo", label: "TODO", color: "#22C55E", group: "sprint" },
-  { id: "in-progress", label: "In Progress", color: "#3B82F6", group: "sprint" },
-  { id: "in-review", label: "In Review", color: "#8B5CF6", group: "sprint" },
-  { id: "on-hold", label: "On Hold", color: "#FBBF24", group: "sprint" },
-  { id: "oncall-todo", label: "TODO", color: "#06B6D4", group: "oncall" },
-  { id: "oncall-in-progress", label: "In Progress", color: "#14B8A6", group: "oncall" },
-  { id: "oncall-in-review", label: "In Review", color: "#22D3EE", group: "oncall" },
-  { id: "oncall-waiting", label: "Waiting", color: "#67E8F9", group: "oncall" },
+  { id: "backlog-new", label: "New", color: "#22C55E", workspace: "backlog" },
+  { id: "backlog-on-hold", label: "On Hold", color: "#FBBF24", workspace: "backlog" },
+  { id: "pinned", label: "Pinned", color: "#F97316", workspace: "sprint" },
+  { id: "in-progress", label: "In Progress", color: "#3B82F6", workspace: "sprint" },
+  { id: "in-review", label: "In Review", color: "#8B5CF6", workspace: "sprint" },
+  { id: "oncall-in-progress", label: "In Progress", color: "#14B8A6", workspace: "oncall" },
+  { id: "oncall-in-review", label: "In Review", color: "#22D3EE", workspace: "oncall" },
 ];
 
 function loadListSections(): ListSection[] {
   try {
     const saved = localStorage.getItem("openui-list-sections");
     if (saved) {
-      const sections: ListSection[] = JSON.parse(saved);
+      let sections: ListSection[] = JSON.parse(saved);
+
+      // Migration: rename group → workspace, remap old section IDs
+      let migrated = false;
+      const idRemap: Record<string, string> = {
+        "todo": "backlog-new",
+        "on-hold": "backlog-on-hold",
+        "oncall-waiting": "backlog-on-hold",
+        "oncall-todo": "backlog-new",
+      };
+      const groupToWorkspace: Record<string, "sprint" | "oncall" | "backlog"> = {
+        sprint: "sprint",
+        oncall: "oncall",
+      };
+
+      sections = sections.map((s) => {
+        const updated = { ...s };
+        // Remap old IDs
+        if (idRemap[updated.id]) {
+          updated.id = idRemap[updated.id];
+          // Remapped sections are always backlog
+          updated.workspace = "backlog";
+          delete (updated as any).group;
+          migrated = true;
+        }
+        // Migrate group → workspace
+        if ((updated as any).group && !updated.workspace) {
+          updated.workspace = groupToWorkspace[(updated as any).group] || "sprint";
+          delete (updated as any).group;
+          migrated = true;
+        }
+        return updated;
+      });
+
+      // Force correct workspace for backlog sections (fixes bad prior migrations)
+      for (const section of sections) {
+        if (section.id.startsWith("backlog-") && section.workspace !== "backlog") {
+          section.workspace = "backlog";
+          migrated = true;
+        }
+      }
+
+      // Deduplicate (e.g. both on-hold and oncall-waiting map to backlog-on-hold)
+      const seen = new Set<string>();
+      sections = sections.filter((s) => {
+        if (seen.has(s.id)) return false;
+        seen.add(s.id);
+        return true;
+      });
+
       // Merge in any new default sections that don't exist yet
       const existingIds = new Set(sections.map((s) => s.id));
       for (const def of DEFAULT_LIST_SECTIONS) {
         if (!existingIds.has(def.id)) {
-          // Insert at the same position as in defaults
           const defIndex = DEFAULT_LIST_SECTIONS.indexOf(def);
           sections.splice(defIndex, 0, def);
+          migrated = true;
         }
       }
+
+      // Backfill workspace from defaults
+      const defaultById = new Map(DEFAULT_LIST_SECTIONS.map((d) => [d.id, d]));
+      for (const section of sections) {
+        if (!section.workspace && defaultById.has(section.id)) {
+          section.workspace = defaultById.get(section.id)!.workspace;
+          migrated = true;
+        }
+      }
+
+      if (migrated) {
+        saveListSections(sections);
+        // Also migrate session categoryId references
+        migrateCategoryIds(idRemap);
+      }
+
       return sections;
     }
   } catch {}
   return DEFAULT_LIST_SECTIONS;
+}
+
+function migrateCategoryIds(idRemap: Record<string, string>) {
+  // Fire-and-forget: update any sessions that reference old category IDs
+  // This will be picked up when sessions load from server
+  const remapEntries = Object.entries(idRemap);
+  if (remapEntries.length === 0) return;
+  // Store the remap so we can apply it when sessions are loaded
+  (window as any).__openui_category_remap = idRemap;
 }
 
 function saveListSections(sections: ListSection[]) {
@@ -275,6 +351,13 @@ export const useStore = create<AppState>((set) => ({
   setUiMode: (mode) => {
     localStorage.setItem("openui-ui-mode", mode);
     set({ uiMode: mode });
+  },
+
+  // Workspace
+  activeWorkspace: localStorage.getItem("openui-active-workspace") || "sprint",
+  setActiveWorkspace: (id) => {
+    localStorage.setItem("openui-active-workspace", id);
+    set({ activeWorkspace: id });
   },
 
   // Focus view
@@ -459,18 +542,7 @@ export const useStore = create<AppState>((set) => ({
     const session = state.sessions.get(nodeId);
     if (!session) return;
 
-    const res = await fetch(`/api/sessions/${session.sessionId}/archive`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ archived: true }),
-    });
-
-    if (!res.ok) {
-      console.error("Failed to archive session: server returned", res.status);
-      return;
-    }
-
-    // Remove from canvas
+    // Update UI immediately
     set((state) => ({
       nodes: state.nodes.filter((n) => n.id !== nodeId),
       sessions: new Map(
@@ -479,6 +551,13 @@ export const useStore = create<AppState>((set) => ({
         )
       ),
     }));
+
+    // Then persist to server
+    fetch(`/api/sessions/${session.sessionId}/archive`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ archived: true }),
+    }).catch((err) => console.error("Failed to archive session:", err));
   },
 
   unarchiveSession: async (nodeId) => {
