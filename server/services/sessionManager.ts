@@ -1589,6 +1589,10 @@ export function createSession(params: {
     }
   }
 
+  if (!mainRepoPath) {
+    mainRepoPath = workingDir;
+  }
+
   // Get git branch if not already set from worktree (local only)
   if (!gitBranch && !remote) {
     gitBranch = getGitBranch(workingDir);
