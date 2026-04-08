@@ -5,6 +5,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { ClipboardAddon } from "@xterm/addon-clipboard";
 import "@xterm/xterm/css/xterm.css";
 import { useStore, AgentStatus } from "../stores/useStore";
 import { getTerminalThemeForTheme } from "../services/terminalTheme";
@@ -143,6 +144,7 @@ export function Terminal({ sessionId, color, nodeId, isActive = true, isShell }:
     term.loadAddon(webLinksAddon);
     term.loadAddon(serializeAddon);
     term.loadAddon(new Unicode11Addon());
+    term.loadAddon(new ClipboardAddon());
     term.unicode.activeVersion = "11";
 
     term.open(terminalRef.current);

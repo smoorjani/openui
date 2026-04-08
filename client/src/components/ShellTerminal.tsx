@@ -4,6 +4,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { RotateCcw, AlertTriangle } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
+import { ClipboardAddon } from "@xterm/addon-clipboard";
 
 interface ShellTerminalProps {
   sessionId: string;
@@ -71,6 +72,7 @@ export function ShellTerminal({ sessionId, cwd, color, remote }: ShellTerminalPr
     const webLinksAddon = new WebLinksAddon();
     term.loadAddon(fitAddon);
     term.loadAddon(webLinksAddon);
+    term.loadAddon(new ClipboardAddon());
 
     term.open(terminalRef.current);
     term.write("\x1b[0m\x1b[?25h");

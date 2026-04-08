@@ -4,6 +4,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { ClipboardAddon } from "@xterm/addon-clipboard";
 import "@xterm/xterm/css/xterm.css";
 import { readSnapshot, writeSnapshot, clearLegacySnapshot } from "./terminalSnapshot";
 import { useStore } from "../stores/useStore";
@@ -325,6 +326,7 @@ export class TerminalPool {
     term.loadAddon(webLinksAddon);
     term.loadAddon(serializeAddon);
     term.loadAddon(new Unicode11Addon());
+    term.loadAddon(new ClipboardAddon());
     term.unicode.activeVersion = "11";
 
     // Open terminal into the off-screen container
