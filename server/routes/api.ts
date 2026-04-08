@@ -256,7 +256,8 @@ apiRoutes.get("/sessions", (c) => {
         agentName: node.agentName,
         command: node.command,
         createdAt: node.createdAt,
-        cwd: node.cwd,
+        cwd: node.originalCwd || node.cwd,
+        originalCwd: node.originalCwd || node.cwd,
         gitBranch: node.gitBranch,
         status: "disconnected",
         customName: node.customName,
@@ -304,6 +305,7 @@ apiRoutes.get("/sessions", (c) => {
         command: session.command,
         createdAt: session.createdAt,
         cwd: session.cwd,
+        originalCwd: session.originalCwd || session.cwd,
         gitBranch: session.gitBranch,
         status: effectiveStatus,
         customName: session.customName,
@@ -557,7 +559,11 @@ apiRoutes.post("/sessions/:sessionId/restart", async (c) => {
     log(`\x1b[38;5;141m[restart]\x1b[0m Restored archived session ${sessionId} into sessions Map`);
   }
 
-  if (session.pty) return c.json({ error: "Session already running" }, 400);
+  // Kill existing PTY if present so the session can be restarted cleanly
+  if (session.pty) {
+    try { session.pty.kill(); } catch {}
+    session.pty = null;
+  }
 
   const startFn = async () => {
     // Re-check after async yield — auto-resume queue may have started this session
