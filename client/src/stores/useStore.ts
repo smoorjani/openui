@@ -239,16 +239,27 @@ const DEFAULT_LIST_SECTIONS: ListSection[] = [
   { id: "oncall-waiting", label: "Waiting", color: "#67E8F9", group: "oncall" },
 ];
 
+function loadRemovedSectionIds(): Set<string> {
+  try {
+    const saved = localStorage.getItem("openui-removed-sections");
+    if (saved) return new Set(JSON.parse(saved));
+  } catch {}
+  return new Set();
+}
+
+function saveRemovedSectionIds(ids: Set<string>) {
+  localStorage.setItem("openui-removed-sections", JSON.stringify([...ids]));
+}
+
 function loadListSections(): ListSection[] {
   try {
     const saved = localStorage.getItem("openui-list-sections");
     if (saved) {
       const sections: ListSection[] = JSON.parse(saved);
-      // Merge in any new default sections that don't exist yet
+      const removedIds = loadRemovedSectionIds();
       const existingIds = new Set(sections.map((s) => s.id));
       for (const def of DEFAULT_LIST_SECTIONS) {
-        if (!existingIds.has(def.id)) {
-          // Insert at the same position as in defaults
+        if (!existingIds.has(def.id) && !removedIds.has(def.id)) {
           const defIndex = DEFAULT_LIST_SECTIONS.indexOf(def);
           sections.splice(defIndex, 0, def);
         }
@@ -307,6 +318,11 @@ export const useStore = create<AppState>((set) => ({
     set((state) => {
       const sections = [...state.listSections, section];
       saveListSections(sections);
+      const removed = loadRemovedSectionIds();
+      if (removed.has(section.id)) {
+        removed.delete(section.id);
+        saveRemovedSectionIds(removed);
+      }
       return { listSections: sections };
     }),
   updateListSection: (id, updates) =>
@@ -321,6 +337,11 @@ export const useStore = create<AppState>((set) => ({
     set((state) => {
       const sections = state.listSections.filter((s) => s.id !== id);
       saveListSections(sections);
+      if (DEFAULT_LIST_SECTIONS.some((d) => d.id === id)) {
+        const removed = loadRemovedSectionIds();
+        removed.add(id);
+        saveRemovedSectionIds(removed);
+      }
       return { listSections: sections };
     }),
 
