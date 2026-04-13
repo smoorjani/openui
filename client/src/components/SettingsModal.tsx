@@ -1,9 +1,17 @@
 import { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, GitBranch, Plus, Trash2, Folder, ChevronRight, LayoutGrid, List, Columns, Shield, Sun, Moon } from "lucide-react";
+import { X, GitBranch, Plus, Trash2, Folder, ChevronRight, LayoutGrid, List, Columns, Shield, Sun, Moon, Sparkles, Code, Cpu, Brain, Terminal } from "lucide-react";
 import { useStore } from "../stores/useStore";
 import { useTerminalPool } from "../contexts/TerminalPoolContext";
+import { DirectoryAutocomplete } from "./DirectoryAutocomplete";
+
+const agentIconMap: Record<string, any> = {
+  sparkles: Sparkles,
+  code: Code,
+  cpu: Cpu,
+  brain: Brain,
+};
 
 interface WorktreeRepo {
   name: string;
@@ -32,6 +40,13 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const colorblindMode = useStore((s) => s.colorblindMode);
   const setColorblindMode = useStore((s) => s.setColorblindMode);
   const terminalPool = useTerminalPool();
+  const agents = useStore((s) => s.agents);
+
+  // New Agent Defaults state
+  const [defaultAgentId, setDefaultAgentId] = useState("");
+  const [defaultCliMode, setDefaultCliMode] = useState<"isaac" | "claude">("isaac");
+  const [defaultCwd, setDefaultCwd] = useState("");
+  const [defaultCommandArgs, setDefaultCommandArgs] = useState("");
 
   const [worktreeRepos, setWorktreeRepos] = useState<WorktreeRepo[]>([]);
   const [showAddRepo, setShowAddRepo] = useState(false);
@@ -81,6 +96,16 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           localStorage.setItem("openui-terminal-font-family", fontFamily);
           localStorage.setItem("openui-terminal-font-size", String(fontSize));
           localStorage.setItem("openui-terminal-font-weight", fontWeight);
+        })
+        .catch(console.error);
+      // Load new agent defaults from settings-v2
+      fetch("/api/settings-v2")
+        .then((res) => res.json())
+        .then((config) => {
+          setDefaultAgentId(config.defaultAgentId || "");
+          setDefaultCliMode(config.defaultCliMode || "isaac");
+          setDefaultCwd(config.defaultCwd || "");
+          setDefaultCommandArgs(config.defaultCommandArgs || "");
         })
         .catch(console.error);
     } else {
@@ -173,7 +198,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
 
     try {
       await fetch("/api/settings", {
-        method: "PUT",
+        method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           defaultBaseBranch,
@@ -182,6 +207,18 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           terminalFontFamily,
           terminalFontSize,
           terminalFontWeight,
+        }),
+      });
+
+      // Save new agent defaults to settings-v2
+      await fetch("/api/settings-v2", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          defaultAgentId: defaultAgentId || "",
+          defaultCliMode: defaultCliMode || "isaac",
+          defaultCwd: defaultCwd || "",
+          defaultCommandArgs: defaultCommandArgs || "",
         }),
       });
 
@@ -624,6 +661,123 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                     <p className="text-xs text-muted">
                       Branches automatically use git worktrees for isolation
                     </p>
+                  </div>
+                </div>
+
+                {/* New Agent Defaults */}
+                <div>
+                  <h3 className="text-sm font-medium text-primary mb-1">New Agent Defaults</h3>
+                  <p className="text-xs text-muted mb-3">
+                    Pre-fill these values when creating a new agent.
+                  </p>
+                  <div className="space-y-3">
+                    {/* Default Agent */}
+                    <div>
+                      <label className="text-xs text-muted block mb-1.5">Agent</label>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => setDefaultAgentId("")}
+                          className={`px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors border ${
+                            !defaultAgentId
+                              ? "border-overlay-20 bg-surface-active text-primary"
+                              : "border-border bg-canvas text-muted hover:text-secondary hover:border-overlay-10"
+                          }`}
+                        >
+                          None
+                        </button>
+                        {agents.map((agent) => {
+                          const Icon = agentIconMap[agent.icon] || Cpu;
+                          return (
+                            <button
+                              key={agent.id}
+                              onClick={() => setDefaultAgentId(agent.id)}
+                              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors border ${
+                                defaultAgentId === agent.id
+                                  ? "border-overlay-20 bg-surface-active text-primary"
+                                  : "border-border bg-canvas text-muted hover:text-secondary hover:border-overlay-10"
+                              }`}
+                            >
+                              <Icon className="w-3 h-3" style={{ color: agent.color }} />
+                              {agent.name}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* CLI Mode (only when Claude is selected) */}
+                    {defaultAgentId === "claude" && (
+                      <div>
+                        <label className="text-xs text-muted block mb-1.5">CLI Mode</label>
+                        <div className="flex rounded-md border border-border overflow-hidden">
+                          <button
+                            type="button"
+                            onClick={() => setDefaultCliMode("isaac")}
+                            className={`px-3 py-1 text-xs font-medium transition-colors ${
+                              defaultCliMode === "isaac"
+                                ? "bg-elevated text-primary"
+                                : "text-tertiary hover:text-primary hover:bg-surface-hover"
+                            }`}
+                          >
+                            isaac
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setDefaultCliMode("claude")}
+                            className={`px-3 py-1 text-xs font-medium transition-colors ${
+                              defaultCliMode === "claude"
+                                ? "bg-elevated text-primary"
+                                : "text-tertiary hover:text-primary hover:bg-surface-hover"
+                            }`}
+                          >
+                            claude
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Default Working Directory */}
+                    <div>
+                      <label className="text-xs text-muted block mb-1.5">Working Directory</label>
+                      <DirectoryAutocomplete
+                        value={defaultCwd}
+                        onChange={(val) => setDefaultCwd(val)}
+                        onSelect={(path) => setDefaultCwd(path)}
+                        placeholder="Leave empty for last-used behavior"
+                        className="w-full px-3 py-2 rounded-md bg-canvas border border-border text-primary text-sm placeholder-faint focus:outline-none focus:border-zinc-500 transition-colors font-mono"
+                      />
+                    </div>
+
+                    {/* Default Command Args */}
+                    <div>
+                      <label className="text-xs text-muted flex items-center gap-1.5 mb-1.5">
+                        <Terminal className="w-3 h-3" />
+                        Command Arguments
+                      </label>
+                      <input
+                        type="text"
+                        value={defaultCommandArgs}
+                        onChange={(e) => setDefaultCommandArgs(e.target.value)}
+                        placeholder="e.g. --model opus"
+                        className="w-full px-3 py-2 rounded-md bg-canvas border border-border text-primary text-sm placeholder-faint focus:outline-none focus:border-zinc-500 transition-colors font-mono"
+                      />
+                    </div>
+
+                    {/* Clear Defaults */}
+                    {(defaultAgentId || defaultCwd || defaultCommandArgs) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDefaultAgentId("");
+                          setDefaultCliMode("isaac");
+                          setDefaultCwd("");
+                          setDefaultCommandArgs("");
+                        }}
+                        className="text-xs text-muted hover:text-red-400 transition-colors"
+                      >
+                        Clear all defaults
+                      </button>
+                    )}
                   </div>
                 </div>
 
