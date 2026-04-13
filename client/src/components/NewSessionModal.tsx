@@ -20,6 +20,7 @@ import {
   Brain,
   History,
   ChevronDown,
+  Check,
 } from "lucide-react";
 import { useReactFlow } from "@xyflow/react";
 import { useStore, Agent, AgentSession } from "../stores/useStore";
@@ -223,6 +224,8 @@ export function NewSessionModal({
 
   // Track if we've initialized for this modal open
   const [initialized, setInitialized] = useState(false);
+  // "Save as defaults" confirmation state
+  const [savedDefaults, setSavedDefaults] = useState(false);
 
   // Conflict warning: count other active agents sharing the same cwd (excluding the session being replaced)
   const effectiveCwd = cwd || (isReplacing ? existingSession?.cwd : null) || launchCwd;
@@ -239,84 +242,100 @@ export function NewSessionModal({
   // Reset form when modal opens (only once per open)
   useEffect(() => {
     if (open && !initialized) {
-      // Fetch CLI info (isaac availability)
-      fetch("/api/cli-info")
-        .then((res) => res.json())
-        .then((info) => {
-          setHasIsaac(info.hasIsaac);
+      (async () => {
+        // Fetch all initialization data in parallel
+        const [cliInfo, settingsV1, settingsV2] = await Promise.all([
+          fetch("/api/cli-info").then((r) => r.json()).catch(() => ({})),
+          fetch("/api/settings").then((r) => r.json()).catch(() => ({})),
+          fetch("/api/settings-v2").then((r) => r.json()).catch(() => ({})),
+        ]);
+
+        // CLI info
+        const isaacAvailable = cliInfo.hasIsaac ?? false;
+        setHasIsaac(isaacAvailable);
+
+        // Default base branch from settings v1
+        if (settingsV1.defaultBaseBranch) {
+          hasExplicitBaseBranch.current = true;
+          defaultBaseBranchRef.current = settingsV1.defaultBaseBranch;
+        }
+
+        if (existingSession) {
+          // Pre-fill from existing session
+          const agent = agents.find((a) => a.id === existingSession.agentId);
+          setSelectedAgent(agent || null);
+          setCwd(existingSession.cwd);
+          setCustomName(existingSession.customName || "");
+          setCommandArgs("");
+          setCount(1);
+          // CLI mode for existing session
           const savedCliMode = localStorage.getItem("openui-last-cli-mode") as "isaac" | "claude" | null;
-          if (savedCliMode && (savedCliMode !== "isaac" || info.hasIsaac)) {
+          if (savedCliMode && (savedCliMode !== "isaac" || isaacAvailable)) {
             setCliMode(savedCliMode);
           } else {
-            setCliMode(info.hasIsaac ? "isaac" : "claude");
+            setCliMode(isaacAvailable ? "isaac" : "claude");
           }
-        })
-        .catch(() => {});
+        } else {
+          // Priority: server defaults (settings-v2) → localStorage → built-in defaults
+          const agentId = settingsV2.defaultAgentId
+            || localStorage.getItem("openui-last-agent-id");
+          const lastAgent = agentId ? agents.find((a) => a.id === agentId) : null;
+          setSelectedAgent(lastAgent || null);
 
-      // Fetch default base branch from settings
-      fetch("/api/settings")
-        .then((res) => res.json())
-        .then((config) => {
-          if (config.defaultBaseBranch) {
-            hasExplicitBaseBranch.current = true;
-            defaultBaseBranchRef.current = config.defaultBaseBranch;
-            setBaseBranch(config.defaultBaseBranch);
+          setCwd(settingsV2.defaultCwd
+            || localStorage.getItem("openui-last-cwd")
+            || "");
+
+          setCommandArgs(settingsV2.defaultCommandArgs || "");
+
+          setCustomName("");
+          setCount(1);
+
+          // CLI mode: server default → localStorage → auto-detect
+          const savedCliMode = (settingsV2.defaultCliMode
+            || localStorage.getItem("openui-last-cli-mode")) as "isaac" | "claude" | null;
+          if (savedCliMode && (savedCliMode !== "isaac" || isaacAvailable)) {
+            setCliMode(savedCliMode);
+          } else {
+            setCliMode(isaacAvailable ? "isaac" : "claude");
           }
-        })
-        .catch(() => {});
+        }
 
+        setActiveTab("blank");
+        // Reset branch/worktree state
+        setBranchName("");
+        setBaseBranch(defaultBaseBranchRef.current);
+        setShowBranchOptions(false);
+        setBranchMode("branch");
+        setPrNumber("");
+        setWorktreeMode("create");
+        setExistingWorktrees([]);
+        setSelectedWorktree("");
+        // Reset GitHub state
+        setSelectedGithubIssue(null);
+        setGithubIssues([]);
+        setGithubError(null);
+        // Reset resume state
+        setSelectedConversation(null);
+        setResumeConversations([]);
+        setResumeError(null);
+        setResumeQuery("");
+        setInitialized(true);
 
-      if (existingSession) {
-        // Pre-fill from existing session
-        const agent = agents.find((a) => a.id === existingSession.agentId);
-        setSelectedAgent(agent || null);
-        setCwd(existingSession.cwd);
-        setCustomName(existingSession.customName || "");
-        setCommandArgs("");
-        setCount(1);
-      } else {
-        const lastAgentId = localStorage.getItem("openui-last-agent-id");
-        const lastAgent = lastAgentId ? agents.find((a) => a.id === lastAgentId) : null;
-        setSelectedAgent(lastAgent || null);
-        setCwd(localStorage.getItem("openui-last-cwd") || "");
-        setCustomName("");
-        setCommandArgs("");
-        setCount(1);
-      }
-      setActiveTab("blank");
-      // Reset branch/worktree state
-      setBranchName("");
-      setBaseBranch(defaultBaseBranchRef.current);
-      setShowBranchOptions(false);
-      setBranchMode("branch");
-      setPrNumber("");
-      setWorktreeMode("create");
-      setExistingWorktrees([]);
-      setSelectedWorktree("");
-      // Reset GitHub state
-      setSelectedGithubIssue(null);
-      setGithubIssues([]);
-      setGithubError(null);
-      // Reset resume state
-      setSelectedConversation(null);
-      setResumeConversations([]);
-      setResumeError(null);
-      setResumeQuery("");
-      setInitialized(true);
-
-      // Handle pending resume from conversation search modal
-      if (pendingResumeConversation) {
-        setActiveTab("resume");
-        setSelectedConversation(pendingResumeConversation);
-        // Auto-select Claude agent
-        const claudeAgent = agents.find((a) => a.id === "claude");
-        if (claudeAgent) setSelectedAgent(claudeAgent);
-        // Auto-set working directory
-        if (pendingResumeConversation.projectPath) setCwd(pendingResumeConversation.projectPath);
-        setPendingResumeConversation(null);
-        // Load projects for the Resume tab
-        loadResumeProjects();
-      }
+        // Handle pending resume from conversation search modal
+        if (pendingResumeConversation) {
+          setActiveTab("resume");
+          setSelectedConversation(pendingResumeConversation);
+          // Auto-select Claude agent
+          const claudeAgent = agents.find((a) => a.id === "claude");
+          if (claudeAgent) setSelectedAgent(claudeAgent);
+          // Auto-set working directory
+          if (pendingResumeConversation.projectPath) setCwd(pendingResumeConversation.projectPath);
+          setPendingResumeConversation(null);
+          // Load projects for the Resume tab
+          loadResumeProjects();
+        }
+      })();
     } else if (!open) {
       // Reset flags when modal closes
       setInitialized(false);
@@ -1486,7 +1505,42 @@ export function NewSessionModal({
                 </div>
 
                 {/* Footer */}
-                <div className="px-5 py-3 bg-canvas border-t border-border flex justify-end gap-2 flex-shrink-0">
+                <div className="px-5 py-3 bg-canvas border-t border-border flex items-center gap-2 flex-shrink-0">
+                  {!isReplacing && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          await fetch("/api/settings-v2", {
+                            method: "PUT",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                              defaultAgentId: selectedAgent?.id || "",
+                              defaultCliMode: cliMode,
+                              defaultCwd: cwd || "",
+                              defaultCommandArgs: commandArgs || "",
+                            }),
+                          });
+                          setSavedDefaults(true);
+                          setTimeout(() => setSavedDefaults(false), 2000);
+                        } catch (e) {
+                          console.error("Failed to save defaults:", e);
+                        }
+                      }}
+                      className="text-xs text-muted hover:text-secondary transition-colors flex items-center gap-1"
+                      title="Save current selections as defaults for new agents"
+                    >
+                      {savedDefaults ? (
+                        <>
+                          <Check className="w-3 h-3 text-green-500" />
+                          <span className="text-green-500">Saved</span>
+                        </>
+                      ) : (
+                        "Save as defaults"
+                      )}
+                    </button>
+                  )}
+                  <div className="flex-1" />
                   <button
                     onClick={handleClose}
                     className="px-3 py-1.5 rounded-md text-sm text-tertiary hover:text-primary hover:bg-surface-active transition-colors"
