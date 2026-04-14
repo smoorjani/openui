@@ -23,3 +23,30 @@ export function getContextWindowSize(model?: string): number {
   if (m.includes("haiku")) return 200_000;
   return 200_000;
 }
+
+/**
+ * Smooth gradient color for context usage percentage.
+ * Transitions through HSL hue: green (120°) → yellow (50°) → red (0°).
+ * Returns a hex color string.
+ */
+export function getContextColor(pct: number): string {
+  const clamped = Math.max(0, Math.min(100, pct));
+  // Map 0-100% to hue 140° (vivid green) → 0° (red)
+  const hue = 140 * (1 - clamped / 100);
+  // High saturation throughout, peaking at extremes
+  const saturation = 80 + (clamped / 100) * 10; // 80% → 90%
+  const lightness = 42 - (clamped / 100) * 2;   // 42% → 40%
+  return hslToHex(hue, saturation, lightness);
+}
+
+function hslToHex(h: number, s: number, l: number): string {
+  s /= 100;
+  l /= 100;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n: number) => {
+    const k = (n + h / 30) % 12;
+    const color = l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
+    return Math.round(255 * color).toString(16).padStart(2, "0");
+  };
+  return `#${f(0)}${f(8)}${f(4)}`;
+}

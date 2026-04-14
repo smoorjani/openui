@@ -3,6 +3,7 @@ import { Settings2, Plus, X, FileText, RotateCw } from "lucide-react";
 import { useStore, AgentStatus } from "../stores/useStore";
 import { Terminal } from "./Terminal";
 import { FocusSessionPicker } from "./FocusSessionPicker";
+import { getContextWindowSize, getContextColor } from "../utils/contextWindow";
 
 function ContextNote({ nodeId, sessionId, notes }: { nodeId: string; sessionId: string; notes?: string }) {
   const updateSession = useStore((s) => s.updateSession);
@@ -247,6 +248,31 @@ export function FocusView() {
                   <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${statusLabel.className}`}>
                     {statusLabel.text}
                   </span>
+                  {/* Context window indicator */}
+                  {session.contextTokens != null && session.contextTokens > 0 && (() => {
+                    const showBar = useStore.getState().showContextBar;
+                    const maxTokens = getContextWindowSize(session.model);
+                    const pct = Math.min(100, Math.round((session.contextTokens / maxTokens) * 100));
+                    const color = getContextColor(pct);
+                    if (!showBar) {
+                      return (
+                        <span className="text-[10px] text-muted font-mono">
+                          {Math.round(session.contextTokens / 1_000)}K ctx
+                        </span>
+                      );
+                    }
+                    return (
+                      <div className="flex items-center gap-1.5 min-w-[60px]">
+                        <div className="w-12 h-1 rounded-full bg-zinc-800 overflow-hidden">
+                          <div
+                            className="h-full rounded-full transition-all duration-500"
+                            style={{ width: `${pct}%`, backgroundColor: color }}
+                          />
+                        </div>
+                        <span className="text-[10px] text-muted font-mono">{pct}%</span>
+                      </div>
+                    );
+                  })()}
                 </div>
                 <div className="flex items-center gap-1">
                   <button
