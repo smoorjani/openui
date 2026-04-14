@@ -3,6 +3,7 @@ import { GripVertical, Calendar, Trash2, ArrowRight, Edit3 } from "lucide-react"
 import { useStore, AgentStatus, ListSection } from "../../stores/useStore";
 import { DeleteConfirmDialog } from "../DeleteConfirmDialog";
 import { deleteSessionWithCleanup } from "../../utils/deleteSession";
+import { getContextWindowSize } from "../../utils/contextWindow";
 
 const statusConfig: Record<AgentStatus, { label: string; color: string }> = {
   creating: { label: "Creating", color: "#3B82F6" },
@@ -116,60 +117,87 @@ export function TaskItem({ nodeId, onSelect, isSelected, onDragStart }: TaskItem
         onDragStart={(e) => onDragStart(e, nodeId)}
         onClick={() => onSelect(nodeId)}
         onContextMenu={handleContextMenu}
-        className={`group flex items-center gap-2 px-3 py-2 rounded-md cursor-pointer transition-colors ${
+        className={`group px-3 py-2 rounded-md cursor-pointer transition-colors ${
           isSelected
             ? "bg-white/10 ring-1 ring-white/20"
             : "hover:bg-white/5"
         }`}
       >
-        <GripVertical className="w-3 h-3 text-zinc-600 opacity-0 group-hover:opacity-100 flex-shrink-0 cursor-grab" />
-        <div className="flex-1 min-w-0">
-          {isRenaming ? (
-            <input
-              value={renameName}
-              onChange={(e) => setRenameName(e.target.value)}
-              onBlur={handleFinishRename}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleFinishRename();
-                if (e.key === "Escape") setIsRenaming(false);
-              }}
-              onClick={(e) => e.stopPropagation()}
-              className="w-full text-sm text-white bg-canvas border border-border rounded px-1.5 py-0.5 focus:outline-none focus:border-zinc-500"
-              autoFocus
-            />
-          ) : (
-            <div className="text-sm text-zinc-200 truncate">{displayName}</div>
-          )}
-          {session.gitBranch && (
-            <span className="text-[10px] text-zinc-600 font-mono truncate block mt-0.5">
-              {session.gitBranch}
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
-          {dueDateInfo && (
+        <div className="flex items-center gap-2">
+          <GripVertical className="w-3 h-3 text-zinc-600 opacity-0 group-hover:opacity-100 flex-shrink-0 cursor-grab" />
+          <div className="flex-1 min-w-0">
+            {isRenaming ? (
+              <input
+                value={renameName}
+                onChange={(e) => setRenameName(e.target.value)}
+                onBlur={handleFinishRename}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleFinishRename();
+                  if (e.key === "Escape") setIsRenaming(false);
+                }}
+                onClick={(e) => e.stopPropagation()}
+                className="w-full text-sm text-white bg-canvas border border-border rounded px-1.5 py-0.5 focus:outline-none focus:border-zinc-500"
+                autoFocus
+              />
+            ) : (
+              <div className="text-sm text-zinc-200 truncate">{displayName}</div>
+            )}
+            {session.gitBranch && (
+              <span className="text-[10px] text-zinc-600 font-mono truncate block mt-0.5">
+                {session.gitBranch}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            {dueDateInfo && (
+              <span
+                className={`text-[10px] ${
+                  dueDateInfo.overdue ? "text-red-400" : "text-zinc-500"
+                }`}
+              >
+                {dueDateInfo.text}
+              </span>
+            )}
             <span
-              className={`text-[10px] ${
-                dueDateInfo.overdue ? "text-red-400" : "text-zinc-500"
-              }`}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold"
+              style={{
+                backgroundColor: status.color + "20",
+                color: status.color,
+              }}
             >
-              {dueDateInfo.text}
+              <div
+                className="w-2 h-2 rounded-full"
+                style={{ backgroundColor: status.color }}
+              />
+              {status.label}
             </span>
-          )}
-          <span
-            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold"
-            style={{
-              backgroundColor: status.color + "20",
-              color: status.color,
-            }}
-          >
-            <div
-              className="w-2 h-2 rounded-full"
-              style={{ backgroundColor: status.color }}
-            />
-            {status.label}
-          </span>
+          </div>
         </div>
+        {/* Context window progress bar — full width below the row */}
+        {session.contextTokens != null && session.contextTokens > 0 && (() => {
+          const showBar = useStore.getState().showContextBar;
+          const maxTokens = getContextWindowSize(session.model);
+          const pct = Math.min(100, Math.round((session.contextTokens / maxTokens) * 100));
+          const color = pct >= 90 ? "#EF4444" : pct >= 70 ? "#FBBF24" : "#22C55E";
+          if (!showBar) {
+            return (
+              <span className="text-[10px] text-zinc-500 font-mono block mt-1 ml-5">
+                {Math.round(session.contextTokens / 1_000)}K ctx
+              </span>
+            );
+          }
+          return (
+            <div className="flex items-center gap-1.5 mt-1.5 ml-5">
+              <div className="flex-1 h-1 rounded-full bg-zinc-800 overflow-hidden">
+                <div
+                  className="h-full rounded-full transition-all duration-500"
+                  style={{ width: `${pct}%`, backgroundColor: color }}
+                />
+              </div>
+              <span className="text-[10px] text-zinc-500 font-mono flex-shrink-0">{pct}%</span>
+            </div>
+          );
+        })()}
       </div>
 
       <DeleteConfirmDialog
