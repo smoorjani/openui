@@ -3,7 +3,7 @@ import { Settings2, Plus, X, FileText, RotateCw } from "lucide-react";
 import { useStore, AgentStatus } from "../stores/useStore";
 import { Terminal } from "./Terminal";
 import { FocusSessionPicker } from "./FocusSessionPicker";
-import { getContextWindowSize } from "../utils/contextWindow";
+import { getContextWindowSize, getContextColor } from "../utils/contextWindow";
 
 function ContextNote({ nodeId, sessionId, notes }: { nodeId: string; sessionId: string; notes?: string }) {
   const updateSession = useStore((s) => s.updateSession);
@@ -253,7 +253,7 @@ export function FocusView() {
                     const showBar = useStore.getState().showContextBar;
                     const maxTokens = getContextWindowSize(session.model);
                     const pct = Math.min(100, Math.round((session.contextTokens / maxTokens) * 100));
-                    const color = pct >= 90 ? "#EF4444" : pct >= 70 ? "#FBBF24" : "#22C55E";
+                    const color = getContextColor(pct);
                     if (!showBar) {
                       return (
                         <span className="text-[10px] text-muted font-mono">

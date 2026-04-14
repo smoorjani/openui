@@ -3,7 +3,7 @@ import { GripVertical, Calendar, Trash2, ArrowRight, Edit3 } from "lucide-react"
 import { useStore, AgentStatus, ListSection } from "../../stores/useStore";
 import { DeleteConfirmDialog } from "../DeleteConfirmDialog";
 import { deleteSessionWithCleanup } from "../../utils/deleteSession";
-import { getContextWindowSize } from "../../utils/contextWindow";
+import { getContextWindowSize, getContextColor } from "../../utils/contextWindow";
 
 const statusConfig: Record<AgentStatus, { label: string; color: string }> = {
   creating: { label: "Creating", color: "#3B82F6" },
@@ -178,7 +178,7 @@ export function TaskItem({ nodeId, onSelect, isSelected, onDragStart }: TaskItem
           const showBar = useStore.getState().showContextBar;
           const maxTokens = getContextWindowSize(session.model);
           const pct = Math.min(100, Math.round((session.contextTokens / maxTokens) * 100));
-          const color = pct >= 90 ? "#EF4444" : pct >= 70 ? "#FBBF24" : "#22C55E";
+          const color = getContextColor(pct);
           if (!showBar) {
             return (
               <span className="text-[10px] text-zinc-500 font-mono block mt-1 ml-5">

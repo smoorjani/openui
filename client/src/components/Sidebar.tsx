@@ -33,7 +33,7 @@ import { ForkDialog, type ForkDialogResult } from "./ForkDialog";
 import { DeleteConfirmDialog } from "./DeleteConfirmDialog";
 import { deleteSessionWithCleanup } from "../utils/deleteSession";
 
-import { getContextWindowSize } from "../utils/contextWindow";
+import { getContextWindowSize, getContextColor } from "../utils/contextWindow";
 
 
 const presetColors = [
@@ -823,7 +823,7 @@ export function Sidebar() {
                 const maxTokens = getContextWindowSize(session.model);
                 const pct = Math.min(100, Math.round((session.contextTokens / maxTokens) * 100));
                 const maxK = Math.round(maxTokens / 1_000);
-                const color = pct >= 90 ? "bg-red-500" : pct >= 70 ? "bg-yellow-500" : "bg-emerald-500";
+                const color = getContextColor(pct);
                 return (
                   <div className="space-y-1">
                     <div className="flex items-center gap-2 text-xs">
@@ -835,8 +835,8 @@ export function Sidebar() {
                     </div>
                     <div className="h-1 rounded-full bg-zinc-800 overflow-hidden ml-5">
                       <div
-                        className={`h-full rounded-full transition-all duration-500 ${color}`}
-                        style={{ width: `${pct}%` }}
+                        className="h-full rounded-full transition-all duration-500"
+                        style={{ width: `${pct}%`, backgroundColor: color }}
                       />
                     </div>
                   </div>

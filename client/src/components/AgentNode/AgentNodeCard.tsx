@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { MessageSquare, WifiOff, GitBranch, Folder, Wrench, Clock, Zap, Flame, Archive, Trash2, Loader2, Coffee, AlertTriangle, RefreshCw } from "lucide-react";
 import { useStore, AgentStatus } from "../../stores/useStore";
-import { getContextWindowSize } from "../../utils/contextWindow";
+import { getContextWindowSize, getContextColor } from "../../utils/contextWindow";
 
 // Status config with visual priority levels
 const defaultStatusConfig: Record<AgentStatus, { label: string; color: string; isActive?: boolean; needsAttention?: boolean }> = {
@@ -376,7 +376,7 @@ export function AgentNodeCard({
           }
           const maxTokens = getContextWindowSize(model);
           const pct = Math.min(100, Math.round((contextTokens / maxTokens) * 100));
-          const color = pct >= 90 ? "#EF4444" : pct >= 70 ? "#FBBF24" : "#22C55E";
+          const color = getContextColor(pct);
           return (
             <div className="mt-2 px-0.5">
               <div className="flex items-center justify-between mb-0.5">
