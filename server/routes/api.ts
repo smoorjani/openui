@@ -1942,8 +1942,11 @@ apiRoutes.get("/usage", async (c) => {
       stderr: "pipe",
       env: { ...process.env },
     });
-    const output = await new Response(proc.stdout).text();
+    const raw = await new Response(proc.stdout).text();
     await proc.exited;
+
+    // Strip ANSI escape codes — isaac usage output is colorized
+    const output = raw.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
 
     // Parse summary lines: "Daily: $X.XX", "Weekly: $X.XX", "Monthly: $X.XX"
     const daily = output.match(/Daily:\s*\$([\d,.]+)/)?.[1] || null;
