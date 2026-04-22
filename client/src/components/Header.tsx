@@ -152,15 +152,36 @@ export function Header() {
     return launchCwd;
   }, [selectedNodeId, sessions, launchCwd]);
 
-  // Keyboard shortcuts (local custom + universe)
+  // Keyboard shortcuts: Ctrl+Shift+B/I/O (works on Mac without browser conflicts)
+  const [orchPromptOpen, setOrchPromptOpen] = useState(false);
+  const [orchPromptValue, setOrchPromptValue] = useState("");
+  const orchInputRef = useRef<HTMLTextAreaElement>(null);
+  // Track the orchestrator-readiness poll so it never outlives the component
+  // (see quick-prompt handler below). Without this, rapid Ctrl+Shift+O submissions
+  // would stack 500ms fetch loops that each run for up to 30s on their own.
+  const orchPollRef = useRef<{ interval: ReturnType<typeof setInterval>; timeout: ReturnType<typeof setTimeout> } | null>(null);
+  useEffect(() => {
+    return () => {
+      if (orchPollRef.current) {
+        clearInterval(orchPollRef.current.interval);
+        clearTimeout(orchPollRef.current.timeout);
+        orchPollRef.current = null;
+      }
+    };
+  }, []);
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey) {
+      // Escape closes any open modal
+      if (e.key === "Escape") {
+        if (orchPromptOpen) { setOrchPromptOpen(false); setOrchPromptValue(""); return; }
+        if (worktreeOpen) { setWorktreeOpen(false); return; }
+        if (investigationOpen) { setInvestigationOpen(false); return; }
+        if (settingsOpen) { setSettingsOpen(false); return; }
+        if (searchOpen) { setSearchOpen(false); return; }
+      }
+      // Ctrl+Shift shortcuts (Ctrl, not Cmd, to avoid browser conflicts)
+      if (e.ctrlKey && e.shiftKey && !e.metaKey) {
         switch (e.key.toLowerCase()) {
-          case "k":
-            e.preventDefault();
-            setAddAgentModalOpen(true);
-            break;
           case "b":
             e.preventDefault();
             setWorktreeOpen(true);
@@ -169,12 +190,32 @@ export function Header() {
             e.preventDefault();
             setInvestigationOpen(true);
             break;
+          case "o":
+            e.preventDefault();
+            setOrchPromptOpen(true);
+            setTimeout(() => orchInputRef.current?.focus(), 50);
+            break;
         }
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [setAddAgentModalOpen]);
+  }, [orchPromptOpen, worktreeOpen, investigationOpen, settingsOpen, searchOpen]);
+
+  // Ctrl+\ to cycle view modes: list -> focus -> canvas -> list
+  useEffect(() => {
+    const viewCycle: Array<"list" | "focus" | "canvas"> = ["list", "focus", "canvas"];
+    const handleViewCycle = (e: KeyboardEvent) => {
+      if (!e.ctrlKey || e.key !== "\\") return;
+      e.preventDefault();
+      const { uiMode, setUiMode } = useStore.getState();
+      const currentIdx = viewCycle.indexOf(uiMode);
+      const nextIdx = (currentIdx + 1) % viewCycle.length;
+      setUiMode(viewCycle[nextIdx]);
+    };
+    window.addEventListener("keydown", handleViewCycle);
+    return () => window.removeEventListener("keydown", handleViewCycle);
+  }, []);
 
   useEffect(() => {
     const handler = () => setSearchOpen((prev) => !prev);
@@ -493,7 +534,7 @@ export function Header() {
               >
                 <Plus className="w-4 h-4" />
                 New Agent
-                <kbd className="ml-auto text-[11px] text-zinc-500 font-mono">⌘K</kbd>
+                <kbd className="ml-auto text-[11px] text-zinc-500 font-mono">Alt+N</kbd>
               </button>
               <button
                 className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-zinc-300 hover:bg-surface-active hover:text-white transition-colors"
@@ -501,7 +542,7 @@ export function Header() {
               >
                 <GitBranch className="w-4 h-4" />
                 New Worktree
-                <kbd className="ml-auto text-[11px] text-zinc-500 font-mono">⌘B</kbd>
+                <kbd className="ml-auto text-[11px] text-zinc-500 font-mono">⌃⇧B</kbd>
               </button>
               <button
                 className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-zinc-300 hover:bg-surface-active hover:text-white transition-colors"
@@ -509,7 +550,7 @@ export function Header() {
               >
                 <AlertTriangle className="w-4 h-4" />
                 New Investigation
-                <kbd className="ml-auto text-[11px] text-zinc-500 font-mono">⌘I</kbd>
+                <kbd className="ml-auto text-[11px] text-zinc-500 font-mono">⌃⇧I</kbd>
               </button>
             </div>
           )}
@@ -544,6 +585,95 @@ export function Header() {
       />
       <WorktreeModal open={worktreeOpen} onClose={() => setWorktreeOpen(false)} />
       <InvestigationModal open={investigationOpen} onClose={() => setInvestigationOpen(false)} />
+
+      {/* Orchestrator quick-prompt modal (Alt+O) */}
+      <AnimatePresence>
+        {orchPromptOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-start justify-center pt-[20vh]"
+            onClick={() => { setOrchPromptOpen(false); setOrchPromptValue(""); }}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: -10, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -10, scale: 0.98 }}
+              transition={{ duration: 0.15 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-[600px] bg-surface border border-border rounded-lg shadow-2xl overflow-hidden"
+            >
+              <div className="flex items-center gap-2 px-4 py-2 border-b border-border bg-elevated">
+                <Bot className="w-4 h-4 text-violet-400" />
+                <span className="text-sm font-medium text-primary">Orchestrator</span>
+                <span className="text-xs text-faint ml-auto">Enter to send · Esc to cancel</span>
+              </div>
+              <textarea
+                ref={orchInputRef}
+                value={orchPromptValue}
+                onChange={(e) => setOrchPromptValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey && orchPromptValue.trim()) {
+                    e.preventDefault();
+                    const msg = orchPromptValue.trim();
+                    setOrchPromptOpen(false);
+                    setOrchPromptValue("");
+                    // Send to orchestrator session, or open panel if not ready
+                    const { orchestratorSessionId, setOrchestratorOpen } = useStore.getState();
+                    if (orchestratorSessionId) {
+                      fetch(`/api/sessions/${orchestratorSessionId}/write`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ message: msg }),
+                      }).catch(console.error);
+                    } else {
+                      // Orchestrator not created yet — open the panel (triggers creation)
+                      // and poll until session is ready, then send
+                      setOrchestratorOpen(true);
+                      // Cancel any in-flight poll from a prior submission so they don't stack.
+                      if (orchPollRef.current) {
+                        clearInterval(orchPollRef.current.interval);
+                        clearTimeout(orchPollRef.current.timeout);
+                        orchPollRef.current = null;
+                      }
+                      const clearPoll = () => {
+                        if (!orchPollRef.current) return;
+                        clearInterval(orchPollRef.current.interval);
+                        clearTimeout(orchPollRef.current.timeout);
+                        orchPollRef.current = null;
+                      };
+                      const interval = setInterval(() => {
+                        const sid = useStore.getState().orchestratorSessionId;
+                        if (sid) {
+                          clearPoll();
+                          setTimeout(() => {
+                            fetch(`/api/sessions/${sid}/write`, {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ message: msg }),
+                            }).catch(console.error);
+                          }, 2000);
+                        }
+                      }, 500);
+                      const timeout = setTimeout(clearPoll, 30000);
+                      orchPollRef.current = { interval, timeout };
+                    }
+                  }
+                  if (e.key === "Escape") {
+                    setOrchPromptOpen(false);
+                    setOrchPromptValue("");
+                  }
+                }}
+                placeholder="Tell the orchestrator what to do..."
+                rows={3}
+                className="w-full px-4 py-3 bg-canvas text-sm text-primary placeholder-faint resize-none focus:outline-none"
+                autoFocus
+              />
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </header>
   );
 }

@@ -13,7 +13,52 @@ import type { WebSocketData } from "./types";
 const allClients = new Set<ServerWebSocket<WebSocketData>>();
 
 const SHELL_BUFFER_MAX = 100;
-const shellTerminals = new Map<string, { pty: ReturnType<typeof spawn>; clients: Set<ServerWebSocket<WebSocketData>>; outputBuffer: string[] }>();
+// Close WS clients whose buffered-to-send amount exceeds this. A slow client
+// that can't keep up with PTY output must not back up the server's memory.
+const WS_BACKPRESSURE_CLOSE_BYTES = 4 * 1024 * 1024; // 4 MB
+
+type ShellTerminal = {
+  pty: ReturnType<typeof spawn>;
+  clients: Set<ServerWebSocket<WebSocketData>>;
+  outputBuffer: string[];
+};
+
+const shellTerminals = new Map<string, ShellTerminal>();
+
+function sendToWs(client: ServerWebSocket<WebSocketData>, payload: string): boolean {
+  if (client.readyState !== 1) return false;
+  if (typeof (client as any).getBufferedAmount === "function"
+      && (client as any).getBufferedAmount() > WS_BACKPRESSURE_CLOSE_BYTES) {
+    try { client.close(1013, "backpressure"); } catch {}
+    return false;
+  }
+  client.send(payload);
+  return true;
+}
+
+function attachShellPtyHandlers(shell: ShellTerminal, pty: ReturnType<typeof spawn>, sessionId: string) {
+  pty.onData((data: string) => {
+    // Guard against stale handlers firing after restart — only the current PTY broadcasts.
+    if (shell.pty !== pty) return;
+    shell.outputBuffer.push(data);
+    if (shell.outputBuffer.length > SHELL_BUFFER_MAX) {
+      shell.outputBuffer.shift();
+    }
+    const payload = JSON.stringify({ type: "output", data });
+    for (const client of shell.clients) {
+      sendToWs(client, payload);
+    }
+  });
+
+  pty.onExit(() => {
+    if (shell.pty !== pty) return;
+    log(`\x1b[38;5;245m[ws]\x1b[0m Shell process exited: ${sessionId}`);
+    const payload = JSON.stringify({ type: "exited" });
+    for (const client of shell.clients) {
+      sendToWs(client, payload);
+    }
+  });
+}
 
 const app = new Hono();
 const PORT = Number(process.env.PORT) || 6968;
@@ -163,27 +208,7 @@ Bun.serve<WebSocketData>({
 
           shell = { pty: ptyProcess, clients: new Set(), outputBuffer: [] };
           shellTerminals.set(sessionId, shell);
-
-          ptyProcess.onData((data: string) => {
-            shell!.outputBuffer.push(data);
-            if (shell!.outputBuffer.length > SHELL_BUFFER_MAX) {
-              shell!.outputBuffer.shift();
-            }
-            for (const client of shell!.clients) {
-              if (client.readyState === 1) {
-                client.send(JSON.stringify({ type: "output", data }));
-              }
-            }
-          });
-
-          ptyProcess.onExit(() => {
-            log(`\x1b[38;5;245m[ws]\x1b[0m Shell process exited: ${sessionId}`);
-            for (const client of shell!.clients) {
-              if (client.readyState === 1) {
-                client.send(JSON.stringify({ type: "exited" }));
-              }
-            }
-          });
+          attachShellPtyHandlers(shell, ptyProcess, sessionId);
         }
 
         shell.clients.add(ws);
@@ -216,32 +241,43 @@ Bun.serve<WebSocketData>({
         // Client cache is up to date — skip buffer replay
         log(`\x1b[38;5;245m[ws]\x1b[0m Cache hit for ${sessionId}, skipping buffer`);
         ws.send(JSON.stringify({ type: "output", data: "", seq: session.outputSeq }));
-      } else if (lastSeq > 0 && session.outputBuffer.length > 0) {
-        // Client has cache — always send as isDelta to preserve scrollback.
-        // The client will append (not clear) when it sees isDelta: true.
-        const missedChunks = session.outputSeq - lastSeq;
-        if (missedChunks > 0 && missedChunks <= session.outputBuffer.length) {
-          // Exact delta — send only the chunks the client missed
-          const startIndex = session.outputBuffer.length - missedChunks;
-          let delta = "";
-          for (let i = startIndex; i < session.outputBuffer.length; i++) {
-            delta += session.outputBuffer[i];
+      } else {
+        // Defer buffer replay until after client sends its first resize.
+        // This prevents garbled text when the panel is narrower than 120 cols
+        // (the PTY default). The client sends resize immediately on ws.onopen.
+        const sendBufferReplay = () => {
+          if (lastSeq > 0 && session.outputBuffer.length > 0) {
+            const missedChunks = session.outputSeq - lastSeq;
+            if (missedChunks > 0 && missedChunks <= session.outputBuffer.length) {
+              const startIndex = session.outputBuffer.length - missedChunks;
+              let delta = "";
+              for (let i = startIndex; i < session.outputBuffer.length; i++) {
+                delta += session.outputBuffer[i];
+              }
+              log(`\x1b[38;5;245m[ws]\x1b[0m Delta replay for ${sessionId}: ${missedChunks} chunks`);
+              ws.send(JSON.stringify({ type: "output", data: delta, seq: session.outputSeq, isDelta: true }));
+            } else {
+              const history = buildReplayHistory(session.outputBuffer);
+              log(`\x1b[38;5;245m[ws]\x1b[0m Stale cache fallback for ${sessionId}: replaying recent history`);
+              ws.send(JSON.stringify({ type: "output", data: history, seq: session.outputSeq }));
+            }
+          } else if (session.outputBuffer.length > 0) {
+            const history = buildReplayHistory(session.outputBuffer);
+            ws.send(JSON.stringify({ type: "output", data: history, seq: session.outputSeq }));
           }
-          log(`\x1b[38;5;245m[ws]\x1b[0m Delta replay for ${sessionId}: ${missedChunks} chunks`);
-          ws.send(JSON.stringify({ type: "output", data: delta, seq: session.outputSeq, isDelta: true }));
-        } else {
-          // Can't compute an exact delta (buffer overflow, seq reset after server
-          // restart, or negative missedChunks). Replaying as a delta would append
-          // recent output onto a stale client snapshot and corrupt the visible
-          // history, so force a clean recent-history replay instead.
-          const history = buildReplayHistory(session.outputBuffer);
-          log(`\x1b[38;5;245m[ws]\x1b[0m Stale cache fallback for ${sessionId}: replaying recent history (missed=${missedChunks}, bufLen=${session.outputBuffer.length})`);
-          ws.send(JSON.stringify({ type: "output", data: history, seq: session.outputSeq }));
-        }
-      } else if (session.outputBuffer.length > 0) {
-        // No cache (lastSeq=0) — full buffer replay for first-time connections
-        const history = buildReplayHistory(session.outputBuffer);
-        ws.send(JSON.stringify({ type: "output", data: history, seq: session.outputSeq }));
+        };
+        (ws.data as any).pendingBufferReplay = sendBufferReplay;
+        // Safety timeout: send buffer anyway if client never sends resize.
+        // Track the timer so close() can clear it and release the closure refs.
+        const replayTimer = setTimeout(() => {
+          (ws.data as any).pendingBufferReplayTimer = undefined;
+          const pending = (ws.data as any).pendingBufferReplay;
+          if (pending) {
+            delete (ws.data as any).pendingBufferReplay;
+            pending();
+          }
+        }, 500);
+        (ws.data as any).pendingBufferReplayTimer = replayTimer;
       }
 
       ws.send(JSON.stringify({
@@ -276,6 +312,7 @@ Bun.serve<WebSocketData>({
             case "restart":
               log(`\x1b[38;5;245m[ws]\x1b[0m Restarting shell: ${sessionId}`);
               shell.pty.kill();
+              shell.outputBuffer.length = 0;
 
               let newPty;
               if (ws.data.remote) {
@@ -301,28 +338,11 @@ Bun.serve<WebSocketData>({
               }
 
               shell.pty = newPty;
+              attachShellPtyHandlers(shell, newPty, sessionId);
 
-              newPty.onData((data: string) => {
-                for (const client of shell.clients) {
-                  if (client.readyState === 1) {
-                    client.send(JSON.stringify({ type: "output", data }));
-                  }
-                }
-              });
-
-              newPty.onExit(() => {
-                log(`\x1b[38;5;245m[ws]\x1b[0m Restarted shell process exited: ${sessionId}`);
-                for (const client of shell.clients) {
-                  if (client.readyState === 1) {
-                    client.send(JSON.stringify({ type: "exited" }));
-                  }
-                }
-              });
-
+              const restartedPayload = JSON.stringify({ type: "restarted" });
               for (const client of shell.clients) {
-                if (client.readyState === 1) {
-                  client.send(JSON.stringify({ type: "restarted" }));
-                }
+                sendToWs(client, restartedPayload);
               }
               break;
           }
@@ -348,6 +368,17 @@ Bun.serve<WebSocketData>({
             if (session.pty && msg.cols > 20 && msg.rows > 5) {
               session.pty.resize(msg.cols, msg.rows);
             }
+            // Flush deferred buffer replay now that PTY is at the correct size
+            const pending = (ws.data as any).pendingBufferReplay;
+            if (pending) {
+              delete (ws.data as any).pendingBufferReplay;
+              const pendingTimer = (ws.data as any).pendingBufferReplayTimer;
+              if (pendingTimer) {
+                clearTimeout(pendingTimer);
+                (ws.data as any).pendingBufferReplayTimer = undefined;
+              }
+              pending();
+            }
             break;
         }
       } catch (e) {
@@ -357,6 +388,16 @@ Bun.serve<WebSocketData>({
     close(ws) {
       const { sessionId, isShell } = ws.data;
       allClients.delete(ws);
+
+      // Release any deferred replay timer so its closure doesn't keep session refs alive.
+      const pendingTimer = (ws.data as any).pendingBufferReplayTimer;
+      if (pendingTimer) {
+        clearTimeout(pendingTimer);
+        (ws.data as any).pendingBufferReplayTimer = undefined;
+      }
+      if ((ws.data as any).pendingBufferReplay) {
+        delete (ws.data as any).pendingBufferReplay;
+      }
 
       if (ws.data.isUi) {
         log(`\x1b[38;5;245m[ws]\x1b[0m UI client disconnected`);
@@ -368,6 +409,13 @@ Bun.serve<WebSocketData>({
         if (shell) {
           shell.clients.delete(ws);
           log(`\x1b[38;5;245m[ws]\x1b[0m Shell disconnected: ${sessionId}`);
+          // Last client gone → kill the PTY and drop the entry so zsh processes
+          // don't accumulate on reconnects (exhausts FDs fast on macOS).
+          if (shell.clients.size === 0) {
+            try { shell.pty.kill(); } catch {}
+            shellTerminals.delete(sessionId);
+            log(`\x1b[38;5;245m[ws]\x1b[0m Shell PTY released: ${sessionId}`);
+          }
         }
         return;
       }

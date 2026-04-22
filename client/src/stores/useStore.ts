@@ -87,6 +87,10 @@ interface AppState {
   uiMode: "canvas" | "list" | "focus";
   setUiMode: (mode: "canvas" | "list" | "focus") => void;
 
+  // Terminal font size
+  terminalFontSize: number;
+  setTerminalFontSize: (size: number) => void;
+
   // Workspace
   activeWorkspace: string;
   setActiveWorkspace: (id: string) => void;
@@ -96,6 +100,8 @@ interface AppState {
   setFocusSessions: (nodeIds: string[]) => void;
   addFocusSession: (nodeId: string) => void;
   removeFocusSession: (nodeId: string) => void;
+  minimizedPanels: Set<string>;
+  toggleMinimizePanel: (nodeId: string) => void;
 
   // List sections
   listSections: ListSection[];
@@ -360,11 +366,26 @@ export const useStore = create<AppState>((set) => ({
   isRemote: false,
   setIsRemote: (isRemote) => set({ isRemote }),
 
+  // Terminal font size
+  terminalFontSize: parseInt(localStorage.getItem("openui-terminal-font-size") || "12", 10),
+  setTerminalFontSize: (size) => {
+    const clamped = Math.max(8, Math.min(24, size));
+    localStorage.setItem("openui-terminal-font-size", String(clamped));
+    set({ terminalFontSize: clamped });
+  },
+
   // UI Mode
   uiMode: (localStorage.getItem("openui-ui-mode") as "canvas" | "list" | "focus") || "list",
   setUiMode: (mode) => {
     localStorage.setItem("openui-ui-mode", mode);
     set({ uiMode: mode });
+    // Sync focus state to server for auto-resume filtering
+    const focusSessions = JSON.parse(localStorage.getItem("openui-focus-sessions") || "[]");
+    fetch("/api/focus-state", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ focusSessions, focusMode: mode === "focus" }),
+    }).catch(() => {});
   },
 
   // Workspace
@@ -379,19 +400,46 @@ export const useStore = create<AppState>((set) => ({
   setFocusSessions: (nodeIds) => {
     localStorage.setItem("openui-focus-sessions", JSON.stringify(nodeIds));
     set({ focusSessions: nodeIds });
+    const focusMode = localStorage.getItem("openui-ui-mode") === "focus";
+    fetch("/api/focus-state", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ focusSessions: nodeIds, focusMode }),
+    }).catch(() => {});
   },
   addFocusSession: (nodeId) =>
     set((state) => {
       if (state.focusSessions.includes(nodeId)) return state;
       const next = [...state.focusSessions, nodeId];
       localStorage.setItem("openui-focus-sessions", JSON.stringify(next));
+      const focusMode = localStorage.getItem("openui-ui-mode") === "focus";
+      fetch("/api/focus-state", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ focusSessions: next, focusMode }),
+      }).catch(() => {});
       return { focusSessions: next };
     }),
   removeFocusSession: (nodeId) =>
     set((state) => {
       const next = state.focusSessions.filter((id) => id !== nodeId);
       localStorage.setItem("openui-focus-sessions", JSON.stringify(next));
+      const focusMode = localStorage.getItem("openui-ui-mode") === "focus";
+      fetch("/api/focus-state", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ focusSessions: next, focusMode }),
+      }).catch(() => {});
       return { focusSessions: next };
+    }),
+  minimizedPanels: new Set(JSON.parse(localStorage.getItem("openui-minimized-panels") || "[]")),
+  toggleMinimizePanel: (nodeId) =>
+    set((state) => {
+      const next = new Set(state.minimizedPanels);
+      if (next.has(nodeId)) next.delete(nodeId);
+      else next.add(nodeId);
+      localStorage.setItem("openui-minimized-panels", JSON.stringify([...next]));
+      return { minimizedPanels: next };
     }),
 
   // List sections

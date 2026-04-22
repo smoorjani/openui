@@ -94,6 +94,7 @@ function clearLegacySnapshot(sessionId: string) {
 
 export function Terminal({ sessionId, color, nodeId, isActive = true, isShell }: TerminalProps) {
   const updateSession = useStore((state) => state.updateSession);
+  const terminalFontSize = useStore((state) => state.terminalFontSize);
   const terminalRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<XTerm | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -127,7 +128,7 @@ export function Terminal({ sessionId, color, nodeId, isActive = true, isShell }:
     const term = new XTerm({
       cursorBlink: true,
       cursorStyle: "bar",
-      fontSize: 12,
+      fontSize: terminalFontSize,
       fontFamily: getTerminalFontFamily(),
       fontWeight: "400",
       lineHeight: 1.4,
@@ -138,7 +139,9 @@ export function Terminal({ sessionId, color, nodeId, isActive = true, isShell }:
     });
 
     const fitAddon = new FitAddon();
-    const webLinksAddon = new WebLinksAddon();
+    const webLinksAddon = new WebLinksAddon((_event, uri) => {
+      window.open(uri, "_blank", "noopener,noreferrer");
+    });
     const serializeAddon = new SerializeAddon();
     term.loadAddon(fitAddon);
     term.loadAddon(webLinksAddon);
@@ -414,14 +417,17 @@ export function Terminal({ sessionId, color, nodeId, isActive = true, isShell }:
     }
 
     // Handle Shift+Enter to insert newline (local enhancement)
+    // Isaac/Claude CLI uses \n to insert a newline without submitting the prompt
     term.attachCustomKeyEventHandler((event) => {
       if (event.key === 'Enter' && event.shiftKey) {
-        // Send newline only on keydown, but block ALL event types (keydown, keypress, keyup)
-        // to prevent double newlines from keypress also being processed
-        if (event.type === 'keydown' && wsRef.current?.readyState === WebSocket.OPEN) {
-          wsRef.current.send(JSON.stringify({ type: "input", data: "\n" }));
+        if (event.type === 'keydown') {
+          const ws = wsRef.current;
+          if (ws?.readyState === WebSocket.OPEN) {
+            // Send literal newline — isaac interprets this as "add line, don't submit"
+            ws.send(JSON.stringify({ type: "input", data: "\n" }));
+          }
         }
-        return false; // Block all Shift+Enter events
+        return false; // Prevent xterm default Enter handling
       }
       // Cmd+Backspace → kill line (Ctrl+U) (local enhancement)
       if (event.key === 'Backspace' && event.metaKey) {
@@ -516,6 +522,10 @@ export function Terminal({ sessionId, color, nodeId, isActive = true, isShell }:
           });
         } catch {}
       }
+      // Drop the in-memory snapshot so the module-level map doesn't grow for
+      // every session a user opens in a long-lived tab. The sessionStorage
+      // copy rehydrates it on remount.
+      inMemorySnapshots.delete(sessionId);
       mountedRef.current = false;
       if (cacheTimeout) clearTimeout(cacheTimeout);
       clearTimeout(connectTimeout);
@@ -531,6 +541,18 @@ export function Terminal({ sessionId, color, nodeId, isActive = true, isShell }:
       term.dispose();
     };
   }, [sessionId, color, nodeId, updateSession, isShell]);
+
+  // React to font size changes
+  useEffect(() => {
+    if (xtermRef.current) {
+      xtermRef.current.options.fontSize = terminalFontSize;
+      fitAddonRef.current?.fit();
+      const ws = wsRef.current;
+      if (ws?.readyState === WebSocket.OPEN && xtermRef.current) {
+        ws.send(JSON.stringify({ type: "resize", cols: xtermRef.current.cols, rows: xtermRef.current.rows }));
+      }
+    }
+  }, [terminalFontSize]);
 
   // Refocus terminal when it becomes the active tab
   useEffect(() => {

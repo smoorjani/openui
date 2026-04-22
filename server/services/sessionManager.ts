@@ -319,6 +319,37 @@ export function getRemoteHost(remote: string): string {
 const TUNNEL_PORT = 46968;
 const SERVER_PORT = parseInt(process.env.PORT || "6968", 10);
 const MAX_BUFFER_SIZE = 5000;
+// Per-session soft cap on buffered output. Caps by count alone did nothing
+// against a single large chunk (hex dump, agent streaming a big blob), which
+// could push a session's in-memory buffer into the hundreds-of-MB range and
+// take down the host. With both caps applied, worst case per session is ~2MB.
+const MAX_BUFFER_BYTES = 2 * 1024 * 1024;
+// Drop WS clients whose outgoing buffer exceeds this — a slow client must not
+// back up server memory.
+const WS_BACKPRESSURE_CLOSE_BYTES = 4 * 1024 * 1024;
+
+// Append data to a session's output buffer while enforcing both chunk-count
+// and byte-size caps. The byte count is tracked lazily on the session via a
+// runtime-only field so restored sessions don't need a migration.
+function pushOutputChunk(session: Session, data: string) {
+  let bytes = (session as any)._outputBufferBytes;
+  if (bytes === undefined) {
+    bytes = 0;
+    for (const chunk of session.outputBuffer) bytes += chunk.length;
+  }
+  session.outputBuffer.push(data);
+  bytes += data.length;
+  session.outputSeq++;
+  while (
+    session.outputBuffer.length > MAX_BUFFER_SIZE
+    || bytes > MAX_BUFFER_BYTES
+  ) {
+    const removed = session.outputBuffer.shift();
+    if (removed === undefined) break;
+    bytes -= removed.length;
+  }
+  (session as any)._outputBufferBytes = bytes;
+}
 
 // Find the git-capable directory for a given path.
 export function findGitCwd(cwd: string): string | null {
@@ -490,9 +521,16 @@ export function broadcastToSession(session: Session, message: object) {
   const json = JSON.stringify(msg);
   for (const client of session.clients) {
     try {
-      if (client.readyState === 1) {
-        client.send(json);
+      if (client.readyState !== 1) continue;
+      // Guard against slow clients — if their send buffer is backed up past the
+      // threshold, close them rather than letting server memory grow unbounded.
+      const getBuffered = (client as any).getBufferedAmount;
+      if (typeof getBuffered === "function" && getBuffered.call(client) > WS_BACKPRESSURE_CLOSE_BYTES) {
+        try { client.close(1013, "backpressure"); } catch {}
+        session.clients.delete(client);
+        continue;
       }
+      client.send(json);
     } catch {
       session.clients.delete(client);
     }
@@ -521,9 +559,7 @@ export function attachOutputHandler(session: Session, ptyProcess: any): void {
   };
 
   ptyProcess.onData((data: string) => {
-    session.outputBuffer.push(data);
-    session.outputSeq++;
-    if (session.outputBuffer.length > MAX_BUFFER_SIZE) session.outputBuffer.shift();
+    pushOutputChunk(session, data);
     session.lastOutputTime = Date.now();
     session.recentOutputSize += data.length;
 
@@ -797,6 +833,157 @@ function buildFinalCommand(command: string, session: { agentId: string; remote?:
     cmd = `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 ${cmd}`;
   }
   return cmd;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// ============ Single code path for session PTY lifecycle ============
+//
+// spawnSessionPty  — creates the PTY (local zsh or SSH)
+// buildStartCommand — builds the isaac command for a fresh start (with optional inline prompt)
+// buildResumeCommand — builds the isaac --resume command (name-first, UUID fallback)
+// writeCommandToPty — writes the command to the PTY (handles SSH prompt detection)
+// startAgent — orchestrates all of the above
+//
+// ALL session starts and resumes MUST go through startAgent().
+
+function spawnSessionPty(session: Session, sessionId: string, cwd: string): ReturnType<typeof spawnPty> {
+  if (session.remote) {
+    const host = getRemoteHost(session.remote);
+    return spawnPty("ssh", sshArgs(host, `cd ${cwd} && export OPENUI_SESSION_ID=${sessionId} OPENUI_PORT=${TUNNEL_PORT} && exec zsh -l`), {
+      name: "xterm-256color",
+      cwd: process.cwd(),
+      env: { ...process.env, TERM: "xterm-256color" },
+      rows: 30,
+      cols: 120,
+    });
+  }
+  return spawnPty("/bin/zsh", [], {
+    name: "xterm-256color",
+    cwd,
+    env: {
+      ...process.env,
+      TERM: "xterm-256color",
+      OPENUI_SESSION_ID: sessionId,
+      OPENUI_PORT: String(process.env.PORT || 6968),
+    },
+    rows: 30,
+    cols: 120,
+  });
+}
+
+// Build a fresh start command. Passes /rename as the initial argument for non-orchestrator
+// agents so isaac sets the custom_title immediately (enables name-based --resume later).
+// Orchestrator is persistent and doesn't need renaming — just passes the prompt directly.
+function buildStartCommand(session: Session, initialPrompt?: string): string {
+  let prompt = "";
+  const isOrchestrator = session.nodeId === "orchestrator";
+  if (session.customName && !isOrchestrator) {
+    prompt = `/rename ${session.customName}`;
+  }
+  if (initialPrompt) {
+    prompt = prompt ? `${prompt}\\n${initialPrompt}` : initialPrompt;
+  }
+  let cmd = "isaac";
+  if (prompt) {
+    const escaped = prompt.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\$/g, "\\$").replace(/`/g, "\\`");
+    cmd = `isaac "${escaped}"`;
+  }
+  return buildFinalCommand(cmd, session);
+}
+
+// Build a resume command. Prefers name-based resume, falls back to UUID.
+function buildResumeCommand(session: Session): string {
+  let baseCmd = session.command.replace(/\s*--resume\s+[\w-]*/, "").replace(/\s*resume\s+"[^"]*"/, "").trim();
+
+  if (session.agentId === "claude") {
+    if (session.customName) {
+      // Name-based resume: isaac --resume "Custom Name"
+      baseCmd = baseCmd.replace(/^(isaac)(\s|$)/, `$1 --resume "${session.customName}"$2`);
+    } else if (session.claudeSessionId && UUID_RE.test(session.claudeSessionId)) {
+      // UUID fallback: isaac --resume <uuid>
+      baseCmd = baseCmd.replace(/^(isaac)(\s|$)/, `$1 --resume ${session.claudeSessionId}$2`);
+    }
+  }
+
+  return buildFinalCommand(baseCmd, session);
+}
+
+// Single source of truth for writing a command to a PTY (handles remote vs local).
+function writeCommandToPty(
+  ptyProcess: ReturnType<typeof spawnPty>,
+  session: Session,
+  sessionId: string,
+  command: string,
+) {
+  if (session.remote) {
+    let commandWritten = false;
+    const SSH_ERROR_PATTERNS = [
+      "Connection refused", "Connection timed out", "Could not resolve",
+      "Permission denied", "Host key verification failed", "No route to host",
+      "Connection closed", "client_loop: send disconnect",
+    ];
+    const fallback = setTimeout(() => {
+      if (!commandWritten && session.pty === ptyProcess) {
+        commandWritten = true;
+        ptyProcess.write(`${command}\r`);
+      }
+    }, 10000);
+    ptyProcess.onData((data: string) => {
+      if (commandWritten) return;
+      for (const pat of SSH_ERROR_PATTERNS) { if (data.includes(pat)) return; }
+      if (data.trim().length > 0) {
+        commandWritten = true;
+        clearTimeout(fallback);
+        session.reconnectAttempts = 0;
+        setTimeout(() => { if (session.pty === ptyProcess) ptyProcess.write(`${command}\r`); }, 200);
+      }
+    });
+  } else {
+    setTimeout(() => {
+      ptyProcess.write(`${command}\r`);
+    }, 300);
+  }
+}
+
+// Start or resume an agent session. This is THE single entry point.
+function startAgent(params: {
+  session: Session;
+  sessionId: string;
+  mode: "fresh" | "resume";
+  initialPrompt?: string;
+}) {
+  const { session, sessionId, mode, initialPrompt } = params;
+  const cwd = session.originalCwd || session.cwd;
+
+  if (cwd !== session.cwd) {
+    log(`\x1b[38;5;82m[start-agent]\x1b[0m Using originalCwd ${cwd} (cwd drifted to ${session.cwd})`);
+  }
+
+  const ptyProcess = spawnSessionPty(session, sessionId, cwd);
+  session.pty = ptyProcess;
+  session.lastOutputTime = Date.now();
+
+  setupPtyHandlers(session, sessionId, ptyProcess);
+
+  const command = mode === "resume"
+    ? buildResumeCommand(session)
+    : buildStartCommand(session, initialPrompt);
+
+  log(`\x1b[38;5;82m[start-agent]\x1b[0m ${mode} ${sessionId}: ${command}`);
+  writeCommandToPty(ptyProcess, session, sessionId, command);
+
+  // Retry logic for resume: if "No conversation found", start fresh
+  if (mode === "resume") {
+    let retried = false;
+    ptyProcess.onData((data: string) => {
+      if (retried || !data.includes("No conversation found")) return;
+      retried = true;
+      log(`\x1b[38;5;141m[start-agent]\x1b[0m Resume failed for ${sessionId}, starting fresh`);
+      const freshCmd = buildStartCommand(session);
+      retryWithNewPty(session, sessionId, freshCmd, () => 1);
+    });
+  }
 }
 
 // Get git branch for a directory
@@ -1121,6 +1308,26 @@ export function createRemoteWorktree(params: {
 
 
 // Async worktree creation with progress updates, then PTY spawn
+// Schedule a /rename command after Isaac starts up, to set the custom_title for name-based resume
+function scheduleRename(ptyProcess: ReturnType<typeof spawnPty>, session: Session, name: string) {
+  let outputSeen = 0;
+  let renamed = false;
+  ptyProcess.onData((data: string) => {
+    if (renamed) return;
+    outputSeen += data.length;
+    // Wait for substantial output (Isaac startup), then rename
+    if (outputSeen > 500) {
+      renamed = true;
+      setTimeout(() => {
+        if (session.pty === ptyProcess) {
+          ptyProcess.write(`/rename ${name}\r`);
+          log(`\x1b[38;5;141m[rename]\x1b[0m Sent /rename ${name}`);
+        }
+      }, 1000);
+    }
+  });
+}
+
 async function createWorktreeAndStartAgent(params: {
   session: Session;
   sessionId: string;
@@ -1187,76 +1394,15 @@ async function createWorktreeAndStartAgent(params: {
 
   sendProgress("Starting agent...");
 
-  // Spawn PTY
-  let ptyProcess;
-  if (remote) {
-    const host = getRemoteHost(remote);
-    ptyProcess = spawnPty("ssh", sshArgs(host, `cd ${session.cwd} && export OPENUI_SESSION_ID=${sessionId} OPENUI_PORT=${TUNNEL_PORT} && exec zsh -l`), {
-      name: "xterm-256color",
-      cwd: process.cwd(),
-      env: { ...process.env, TERM: "xterm-256color" },
-      rows: 30,
-      cols: 120,
-    });
-  } else {
-    ptyProcess = spawnPty("/bin/zsh", [], {
-      name: "xterm-256color",
-      cwd: session.cwd,
-      env: {
-        ...process.env,
-        TERM: "xterm-256color",
-        OPENUI_SESSION_ID: sessionId,
-      },
-      rows: 30,
-      cols: 120,
-    });
-  }
-
-  session.pty = ptyProcess;
   session.status = "waiting_input";
   session.creationProgress = undefined;
 
-  setupPtyHandlers(session, sessionId, ptyProcess);
+  const initialPrompt = session.initialPrompt;
+  session.initialPrompt = undefined;
 
-  // Run the agent command
-  const finalCommand = buildFinalCommand(command, session);
-  log(`\x1b[38;5;82m[pty-write]\x1b[0m Writing command: ${finalCommand}`);
+  startAgent({ session, sessionId, mode: "fresh", initialPrompt });
 
-  if (remote) {
-    // Wait for shell prompt before writing command
-    let commandWritten = false;
-    const SSH_ERROR_PATTERNS = ["Connection refused", "Connection timed out", "Could not resolve",
-      "Permission denied", "Host key verification failed", "No route to host",
-      "Connection closed", "client_loop: send disconnect"];
-    const fallback = setTimeout(() => {
-      if (!commandWritten && session.pty === ptyProcess) {
-        commandWritten = true;
-        ptyProcess.write(`${finalCommand}\r`);
-      }
-    }, 10000);
-    ptyProcess.onData((data: string) => {
-      if (commandWritten) return;
-      for (const pat of SSH_ERROR_PATTERNS) { if (data.includes(pat)) return; }
-      if (data.trim().length > 0) {
-        commandWritten = true;
-        clearTimeout(fallback);
-        session.reconnectAttempts = 0;
-        setTimeout(() => { if (session.pty === ptyProcess) ptyProcess.write(`${finalCommand}\r`); }, 200);
-      }
-    });
-  } else {
-    setTimeout(() => {
-      ptyProcess.write(`${finalCommand}\r`);
-    }, 300);
-  }
-
-  broadcastToSession(session, {
-    type: "status",
-    status: "waiting_input",
-  });
-
-  // Send initial prompt after isaac is ready
-  scheduleInitialPrompt(session, sessionId, ptyProcess);
+  broadcastToSession(session, { type: "status", status: "waiting_input" });
 
   log(`\x1b[38;5;141m[worktree-async]\x1b[0m Completed ${sessionId}`);
 }
@@ -1483,6 +1629,11 @@ export function createSession(params: {
     ticketPromptTemplate,
   } = params;
 
+  // Auto-generate a name for Claude sessions if none provided (enables name-based resume)
+  const autoName = customName || (agentId === "claude"
+    ? `openui-${agentName}-${branchName || sessionId.slice(0, 8)}`
+    : undefined);
+
   let workingDir = originalCwd.startsWith("~/") ? join(homedir(), originalCwd.slice(2)) : originalCwd === "~" ? homedir() : originalCwd;
   let worktreePath: string | undefined;
   let mainRepoPath: string | undefined;
@@ -1528,7 +1679,7 @@ export function createSession(params: {
       lastOutputTime: now,
       lastInputTime: 0,
       recentOutputSize: 0,
-      customName,
+      customName: autoName,
       customColor,
       nodeId,
       isRestored: false,
@@ -1603,38 +1754,9 @@ export function createSession(params: {
     syncPluginToRemote(remote).catch(() => {});
   }
 
-  // Spawn PTY: SSH for remote sessions, local zsh otherwise
-  let ptyProcess;
-  if (remote) {
-    const host = getRemoteHost(remote);
-    ptyProcess = spawnPty("ssh", sshArgs(host, `cd ${workingDir} && export OPENUI_SESSION_ID=${sessionId} OPENUI_PORT=${TUNNEL_PORT} && exec zsh -l`), {
-      name: "xterm-256color",
-      cwd: process.cwd(),
-      env: {
-        ...process.env,
-        TERM: "xterm-256color",
-      },
-      rows: 30,
-      cols: 120,
-    });
-    log(`\x1b[38;5;141m[session]\x1b[0m Spawned SSH PTY to ${host}, cwd: ${workingDir}`);
-  } else {
-    ptyProcess = spawnPty("/bin/zsh", [], {
-      name: "xterm-256color",
-      cwd: workingDir,
-      env: {
-        ...process.env,
-        TERM: "xterm-256color",
-        OPENUI_SESSION_ID: sessionId,
-      },
-      rows: 30,
-      cols: 120,
-    });
-  }
-
   const now = Date.now();
   const session: Session = {
-    pty: ptyProcess,
+    pty: null,
     agentId,
     agentName,
     command,
@@ -1650,7 +1772,7 @@ export function createSession(params: {
     lastOutputTime: now,
     lastInputTime: 0,
     recentOutputSize: 0,
-    customName,
+    customName: autoName,
     customColor,
     nodeId,
     isRestored: false,
@@ -1664,55 +1786,22 @@ export function createSession(params: {
   };
 
   sessions.set(sessionId, session);
-  setupPtyHandlers(session, sessionId, ptyProcess);
 
-  // Run the command
-  const finalCommand = buildFinalCommand(command, session);
-  log(`\x1b[38;5;82m[pty-write]\x1b[0m Writing command: ${finalCommand}`);
+  // Single code path for starting the agent
+  startAgent({ session, sessionId, mode: "fresh", initialPrompt });
 
-  if (remote) {
-    // Wait for shell prompt before writing command
-    let commandWritten = false;
-    const SSH_ERROR_PATTERNS = ["Connection refused", "Connection timed out", "Could not resolve",
-      "Permission denied", "Host key verification failed", "No route to host",
-      "Connection closed", "client_loop: send disconnect"];
-    const fallback = setTimeout(() => {
-      if (!commandWritten && session.pty === ptyProcess) {
-        commandWritten = true;
-        ptyProcess.write(`${finalCommand}\r`);
-      }
-    }, 10000);
-    ptyProcess.onData((data: string) => {
-      if (commandWritten) return;
-      for (const pat of SSH_ERROR_PATTERNS) { if (data.includes(pat)) return; }
-      if (data.trim().length > 0) {
-        commandWritten = true;
-        clearTimeout(fallback);
-        session.reconnectAttempts = 0;
-        setTimeout(() => { if (session.pty === ptyProcess) ptyProcess.write(`${finalCommand}\r`); }, 200);
-      }
-    });
-  } else {
+  // If there's a ticket URL, send it after agent starts
+  if (ticketUrl && session.pty) {
     setTimeout(() => {
-      ptyProcess.write(`${finalCommand}\r`);
-
-      // If there's a ticket URL, send it to the agent after a delay
-      if (ticketUrl) {
-        setTimeout(() => {
-          const defaultTemplate = "Here is the ticket for this session: {{url}}\n\nPlease use the appropriate MCP tool or fetch the URL to read the full ticket details before starting work.";
-          const template = ticketPromptTemplate || defaultTemplate;
-          const ticketPrompt = template
-            .replace(/\{\{url\}\}/g, ticketUrl)
-            .replace(/\{\{id\}\}/g, ticketId || "")
-            .replace(/\{\{title\}\}/g, ticketTitle || "");
-          ptyProcess.write(ticketPrompt + "\r");
-        }, 2000);
-      }
-    }, 300);
+      const defaultTemplate = "Here is the ticket for this session: {{url}}\n\nPlease use the appropriate MCP tool or fetch the URL to read the full ticket details before starting work.";
+      const template = ticketPromptTemplate || defaultTemplate;
+      const ticketPrompt = template
+        .replace(/\{\{url\}\}/g, ticketUrl)
+        .replace(/\{\{id\}\}/g, ticketId || "")
+        .replace(/\{\{title\}\}/g, ticketTitle || "");
+      session.pty?.write(ticketPrompt + "\r");
+    }, 2000);
   }
-
-  // Send initial prompt after isaac is ready
-  scheduleInitialPrompt(session, sessionId, ptyProcess);
 
   log(`\x1b[38;5;141m[session]\x1b[0m Created ${sessionId} for ${agentName}${ticketId ? ` (ticket: ${ticketId})` : ""}${remote ? ` on ${remote}` : ""}`);
   return { session, cwd: workingDir, gitBranch: gitBranch || undefined };
@@ -1887,32 +1976,30 @@ export function restoreSessions() {
       if (parsed) session.model = parsed;
     }
 
+    // Recover or refresh claudeSessionId from local .id file (always fresher than state.json)
+    if (!node.remote) {
+      const idFile = join(homedir(), ".openui", "sessions", `${node.sessionId}.id`);
+      if (existsSync(idFile)) {
+        const diskId = readFileSync(idFile, "utf-8").trim();
+        if (diskId && UUID_RE.test(diskId) && diskId !== session.claudeSessionId) {
+          if (session.claudeSessionId) {
+            if (!session.claudeSessionHistory) session.claudeSessionHistory = [];
+            if (!session.claudeSessionHistory.includes(session.claudeSessionId)) {
+              session.claudeSessionHistory.push(session.claudeSessionId);
+            }
+          }
+          log(`\x1b[38;5;82m[restore]\x1b[0m Updated claudeSessionId for ${node.sessionId}: ${session.claudeSessionId || 'none'} -> ${diskId}`);
+          session.claudeSessionId = diskId;
+        }
+      }
+    }
+
     sessions.set(node.sessionId, session);
     sessionIds.push(node.sessionId);
     log(`\x1b[38;5;245m[restore]\x1b[0m Restored ${node.sessionId} (${node.agentName}) model: ${session.model || 'unknown'} branch: ${gitBranch || 'none'}${node.remote ? ` remote: ${node.remote}` : ''}`);
   }
 
-  // Auto-resume sessions (skip those in TODO or On Hold)
-  const SKIP_CATEGORIES = new Set(["todo", "on-hold"]);
-  const resumeIds = sessionIds.filter((sid) => {
-    const s = sessions.get(sid);
-    if (s && s.categoryId && SKIP_CATEGORIES.has(s.categoryId)) {
-      log(`\x1b[38;5;245m[auto-resume]\x1b[0m Skipping ${sid} (category: ${s.categoryId})`);
-      return false;
-    }
-    return true;
-  });
-
-  if (resumeIds.length > 0) {
-    log(`\x1b[38;5;82m[auto-resume]\x1b[0m Starting auto-resume for ${resumeIds.length}/${sessionIds.length} sessions...`);
-    resumeIds.forEach((sid, index) => {
-      setTimeout(() => {
-        resumeSession(sid).catch((err) => {
-          log(`\x1b[38;5;196m[auto-resume]\x1b[0m Failed to resume ${sid}: ${err}`);
-        });
-      }, index * 2000); // 2s stagger between each session
-    });
-  }
+  // Auto-resume is handled by autoResumeSessions() which respects focus mode filtering
 }
 
 /**
@@ -1953,120 +2040,21 @@ export function autoResumeSessions() {
 
     const startFn = () => {
       try {
-        // Re-check — user may have clicked Resume while this was queued
         if (session.pty) {
           log(`\x1b[38;5;245m[auto-resume]\x1b[0m Skipping ${node.sessionId} (already started)`);
           signalSessionReady(node.sessionId);
           return;
         }
-        // Spawn PTY in originalCwd so Claude finds the session in the correct project directory.
-        // The session's cwd may have drifted to a worktree path, which maps to a different
-        // Claude project dir than where the conversation was originally stored.
-        const resumeCwd = session.originalCwd || session.cwd;
-        if (resumeCwd !== session.cwd) {
-          log(`\x1b[38;5;141m[auto-resume]\x1b[0m Using originalCwd ${resumeCwd} (cwd drifted to ${session.cwd})`);
-        }
 
-        let ptyProcess;
-        if (session.remote) {
-          const host = getRemoteHost(session.remote);
-          ptyProcess = spawnPty("ssh", sshArgs(host, `cd ${resumeCwd} && export OPENUI_SESSION_ID=${node.sessionId} OPENUI_PORT=${TUNNEL_PORT} && exec zsh -l`), {
-            name: "xterm-256color",
-            cwd: process.cwd(),
-            env: {
-              ...process.env,
-              TERM: "xterm-256color",
-            },
-            rows: 30,
-            cols: 120,
-          });
-        } else {
-          ptyProcess = spawnPty(process.env.SHELL || "/bin/bash", [], {
-            name: "xterm-256color",
-            cwd: resumeCwd,
-            env: {
-              ...process.env,
-              TERM: "xterm-256color",
-              OPENUI_SESSION_ID: node.sessionId,
-              OPENUI_PORT: String(process.env.PORT || 6968),
-            },
-            rows: 30,
-            cols: 120,
-          });
-        }
-
-        session.pty = ptyProcess;
         session.status = "idle";
         session.isRestored = false;
         session.autoResumed = true;
 
-        setupPtyHandlers(session, node.sessionId, ptyProcess);
-
-        // Build the command with resume flag if we have a Claude session ID
-        let finalCommand = buildFinalCommand(session.command, session);
-
-        // For Claude sessions, use --resume to restore the specific session.
-        // If the command already has --resume but claudeSessionId is newer (e.g. after /clear),
-        // update the resume ID to the latest one.
-        const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-        const existingResume = session.command.match(/--resume\s+([\w-]+)/);
-        if (existingResume && session.claudeSessionId && UUID_RE.test(session.claudeSessionId)
-            && existingResume[1] !== session.claudeSessionId) {
-          // claudeSessionId is newer than what's in the command — update both
-          const oldId = existingResume[1];
-          const resumeArg = `--resume ${session.claudeSessionId}`;
-          session.command = session.command.replace(/--resume\s+[\w-]+/, resumeArg);
-          finalCommand = finalCommand.replace(/--resume\s+[\w-]+/, resumeArg);
-          log(`\x1b[38;5;141m[auto-resume]\x1b[0m Updated stale --resume ${oldId} → ${session.claudeSessionId}`);
-        } else if (existingResume) {
-          log(`\x1b[38;5;141m[auto-resume]\x1b[0m Using existing --resume ${existingResume[1]} from command`);
-        } else if (session.agentId === "claude" && session.claudeSessionId && UUID_RE.test(session.claudeSessionId)) {
-          const resumeArg = `--resume ${session.claudeSessionId}`;
-          if (finalCommand === "isaac" || finalCommand.startsWith("isaac ")) {
-            finalCommand = finalCommand.replace(/^isaac/, `isaac ${resumeArg}`);
-          } else if (finalCommand.startsWith("llm agent claude")) {
-            finalCommand = finalCommand.replace(/^llm agent claude/, `llm agent claude ${resumeArg}`);
-          } else if (finalCommand.startsWith("claude")) {
-            finalCommand = finalCommand.replace(/^claude(\s|$)/, `claude ${resumeArg}$1`);
-          }
-          // Persist --resume into the command so future restarts use the correct ID
-          session.command = session.command.replace(/^(isaac|llm agent claude|claude)/, `$1 ${resumeArg}`);
-          log(`\x1b[38;5;141m[auto-resume]\x1b[0m Resuming Claude session: ${session.claudeSessionId} (persisted to command)`);
-        }
-
-        // Send the command to the PTY after a short delay
-        if (session.remote) {
-          // Wait for shell prompt for remote sessions
-          let commandWritten = false;
-          const SSH_ERROR_PATTERNS = ["Connection refused", "Connection timed out", "Could not resolve",
-            "Permission denied", "Host key verification failed", "No route to host",
-            "Connection closed", "client_loop: send disconnect"];
-          const fallback = setTimeout(() => {
-            if (!commandWritten && session.pty === ptyProcess) {
-              commandWritten = true;
-              ptyProcess.write(`${finalCommand}\r`);
-            }
-          }, 10000);
-          ptyProcess.onData((data: string) => {
-            if (commandWritten) return;
-            for (const pat of SSH_ERROR_PATTERNS) { if (data.includes(pat)) return; }
-            if (data.trim().length > 0) {
-              commandWritten = true;
-              clearTimeout(fallback);
-              session.reconnectAttempts = 0;
-              setTimeout(() => { if (session.pty === ptyProcess) ptyProcess.write(`${finalCommand}\r`); }, 200);
-            }
-          });
-        } else {
-          setTimeout(() => {
-            ptyProcess.write(`${finalCommand}\r`);
-          }, 300);
-        }
+        startAgent({ session, sessionId: node.sessionId, mode: "resume" });
 
         log(`\x1b[38;5;141m[auto-resume]\x1b[0m Resumed ${node.sessionId} (${node.agentName})`);
       } catch (error) {
         logError(`\x1b[38;5;141m[auto-resume]\x1b[0m Failed to resume ${node.sessionId}:`, error);
-        // Signal ready on failure so the queue isn't blocked
         signalSessionReady(node.sessionId);
       }
     };
@@ -2086,6 +2074,17 @@ export function autoResumeSessions() {
 }
 
 export async function resumeSession(sessionId: string): Promise<boolean> {
+  try {
+    return await _resumeSessionInner(sessionId);
+  } catch (err) {
+    logError(`\x1b[38;5;196m[resume]\x1b[0m Unhandled error resuming ${sessionId}:`, err);
+    const session = sessions.get(sessionId);
+    if (session) session.status = "disconnected";
+    return false;
+  }
+}
+
+async function _resumeSessionInner(sessionId: string): Promise<boolean> {
   const session = sessions.get(sessionId);
   if (!session) {
     log(`\x1b[38;5;196m[resume]\x1b[0m Session ${sessionId} not found`);
@@ -2123,131 +2122,12 @@ export async function resumeSession(sessionId: string): Promise<boolean> {
     }
   }
 
-  // Spawn PTY: SSH for remote sessions, local zsh otherwise
-  let ptyProcess;
-  if (session.remote) {
-    const host = getRemoteHost(session.remote);
-    ptyProcess = spawnPty("ssh", sshArgs(host, `cd ${session.cwd} && export OPENUI_SESSION_ID=${sessionId} OPENUI_PORT=${TUNNEL_PORT} && exec zsh -l`), {
-      name: "xterm-256color",
-      cwd: process.cwd(),
-      env: { ...process.env, TERM: "xterm-256color" },
-      rows: 30,
-      cols: 120,
-    });
-  } else {
-    ptyProcess = spawnPty("/bin/zsh", [], {
-      name: "xterm-256color",
-      cwd: session.cwd,
-      env: {
-        ...process.env,
-        TERM: "xterm-256color",
-        OPENUI_SESSION_ID: sessionId,
-      },
-      rows: 30,
-      cols: 120,
-    });
-  }
-
-  session.pty = ptyProcess;
   session.isRestored = false;
   session.status = "running";
-  session.lastOutputTime = Date.now();
   session.outputBuffer = [];
+  (session as any)._outputBufferBytes = 0;
 
-  // Use shared handler — gives us onExit auto-reconnect for free
-  setupPtyHandlers(session, sessionId, ptyProcess);
-
-  // Build the resume command, preserving ALL original --plugin-dir flags
-  // and injecting our openui status plugin alongside them.
-  const originalPluginDirs: string[] = [];
-  const pluginDirRegex = /--plugin-dir\s+(\S+)/g;
-  let pluginMatch;
-  while ((pluginMatch = pluginDirRegex.exec(session.command)) !== null) {
-    originalPluginDirs.push(pluginMatch[1]);
-  }
-
-  // Reconstruct base command: isaac + all original plugin-dirs + our injected one
-  const buildCommand = (base: string): string => {
-    let cmd = base;
-    for (const dir of originalPluginDirs) {
-      if (!cmd.includes(dir)) {
-        cmd = cmd.replace("isaac", `isaac --plugin-dir ${dir}`);
-      }
-    }
-    // Apply all command injections
-    cmd = buildFinalCommand(cmd, session);
-    return cmd;
-  };
-
-  let finalCommand: string;
-  const hasSessionId = session.agentId === "claude" && session.claudeSessionId;
-  if (hasSessionId) {
-    finalCommand = buildCommand(`isaac --resume ${session.claudeSessionId}`);
-    log(`\x1b[38;5;141m[resume]\x1b[0m Attempting resume with session: ${session.claudeSessionId}`);
-  } else {
-    finalCommand = buildCommand("isaac --resume");
-    log(`\x1b[38;5;141m[resume]\x1b[0m Resume (no session ID) for ${sessionId}`);
-  }
-
-  // Retry logic for "No conversation found" — layer on top of setupPtyHandlers' onData
-  let retryAttempt = 0;
-  ptyProcess.onData((data: string) => {
-    if (data.includes("No conversation found") && retryAttempt < 2) {
-      retryAttempt++;
-      if (retryAttempt === 1) {
-        session.claudeSessionId = undefined;
-        log(`\x1b[38;5;141m[resume]\x1b[0m Session ID invalid for ${sessionId}, trying --resume without ID`);
-        retryWithNewPty(session, sessionId, buildCommand("isaac --resume"), () => retryAttempt);
-      } else {
-        log(`\x1b[38;5;141m[resume]\x1b[0m --resume failed, starting fresh for ${sessionId}`);
-        retryWithNewPty(session, sessionId, buildCommand("isaac"), () => retryAttempt);
-      }
-    }
-  });
-
-  // Write the command after shell is ready
-  if (session.remote) {
-    // For remote sessions: wait for actual shell prompt instead of blind timer.
-    // SSH errors cause immediate exit; a shell prompt means SSH connected.
-    let commandWritten = false;
-    const SSH_ERROR_PATTERNS = [
-      "Connection refused", "Connection timed out", "Could not resolve",
-      "Permission denied", "Host key verification failed", "No route to host",
-      "Connection closed", "client_loop: send disconnect",
-    ];
-
-    const promptFallback = setTimeout(() => {
-      if (!commandWritten && session.pty === ptyProcess) {
-        log(`\x1b[38;5;208m[resume]\x1b[0m Prompt detection timed out for ${sessionId}, writing command as fallback`);
-        commandWritten = true;
-        ptyProcess.write(`${finalCommand}\r`);
-      }
-    }, 10000);
-
-    ptyProcess.onData((data: string) => {
-      if (commandWritten) return;
-      // Don't write command if we see SSH error output
-      for (const pattern of SSH_ERROR_PATTERNS) {
-        if (data.includes(pattern)) return;
-      }
-      // Any non-empty, non-error output means shell prompt is ready
-      if (data.trim().length > 0) {
-        commandWritten = true;
-        clearTimeout(promptFallback);
-        session.reconnectAttempts = 0; // SSH connected successfully
-        log(`\x1b[38;5;82m[resume]\x1b[0m Shell prompt detected for ${sessionId}, writing command`);
-        setTimeout(() => {
-          if (session.pty === ptyProcess) {
-            ptyProcess.write(`${finalCommand}\r`);
-          }
-        }, 200);
-      }
-    });
-  } else {
-    setTimeout(() => {
-      ptyProcess.write(`${finalCommand}\r`);
-    }, 300);
-  }
+  startAgent({ session, sessionId, mode: "resume" });
 
   // Broadcast running status to clients
   broadcastToSession(session, { type: "status", status: "running" });
@@ -2274,46 +2154,18 @@ function retryWithNewPty(
       await syncPluginToRemote(session.remote).catch(() => {});
     }
 
-    let newPty;
-    if (session.remote) {
-      const host = getRemoteHost(session.remote);
-      newPty = spawnPty("ssh", sshArgs(host, `cd ${session.cwd} && export OPENUI_SESSION_ID=${sessionId} OPENUI_PORT=${TUNNEL_PORT} && exec zsh -l`), {
-        name: "xterm-256color",
-        cwd: process.cwd(),
-        env: { ...process.env, TERM: "xterm-256color" },
-        rows: 30,
-        cols: 120,
-      });
-    } else {
-      newPty = spawnPty("/bin/zsh", [], {
-        name: "xterm-256color",
-        cwd: session.cwd,
-        env: { ...process.env, TERM: "xterm-256color", OPENUI_SESSION_ID: sessionId },
-        rows: 30,
-        cols: 120,
-      });
-    }
-
+    const cwd = session.originalCwd || session.cwd;
+    const newPty = spawnSessionPty(session, sessionId, cwd);
     session.pty = newPty;
     session.outputBuffer = [];
+    (session as any)._outputBufferBytes = 0;
     setupPtyHandlers(session, sessionId, newPty);
 
-    // Additional retry detection on the new PTY — rebuild with ALL plugin-dirs
+    // Additional retry detection on the new PTY
     newPty.onData((data: string) => {
       if (data.includes("No conversation found") && getRetryAttempt() < 2) {
         log(`\x1b[38;5;141m[resume]\x1b[0m --resume failed on retry, starting fresh for ${sessionId}`);
-        let freshCmd = "isaac";
-        // Restore all original plugin-dirs from the session command
-        const dirRegex = /--plugin-dir\s+(\S+)/g;
-        let m;
-        while ((m = dirRegex.exec(session.command)) !== null) {
-          if (!freshCmd.includes(m[1])) {
-            freshCmd += ` --plugin-dir ${m[1]}`;
-          }
-        }
-        // Apply all command injections
-        freshCmd = buildFinalCommand(freshCmd, session);
-        retryWithNewPty(session, sessionId, freshCmd, () => 2); // No more retries
+        retryWithNewPty(session, sessionId, buildStartCommand(session), () => 2);
       }
     });
 

@@ -154,6 +154,8 @@ export interface PersistedState {
   websiteNodes?: PersistedWebsiteNode[];
   canvases?: Canvas[];  // Tab-based workspaces
   categories?: PersistedCategory[];  // Deprecated: kept for migration from folder system
+  focusSessions?: string[];  // nodeIds currently in focus view
+  focusMode?: boolean;       // whether the UI is in focus mode
 }
 
 export interface Agent {

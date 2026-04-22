@@ -43,6 +43,16 @@ export function getSessionsToResume(): PersistedNode[] {
     sessionsToResume = sessionsToResume.filter(s => !s.archived);
   }
 
+  // Skip sessions in non-active categories
+  const SKIP_CATEGORIES = new Set(["todo", "on-hold"]);
+  sessionsToResume = sessionsToResume.filter(s => !s.categoryId || !SKIP_CATEGORIES.has(s.categoryId));
+
+  // In focus mode, only resume sessions in the focus set
+  if (state.focusMode && state.focusSessions && state.focusSessions.length > 0) {
+    const focusSet = new Set(state.focusSessions);
+    sessionsToResume = sessionsToResume.filter(s => focusSet.has(s.nodeId));
+  }
+
   // Apply concurrent limit if configured
   if (config.maxConcurrent !== undefined && config.maxConcurrent > 0) {
     // Sort by most recently created and take only maxConcurrent

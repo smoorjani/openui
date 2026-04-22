@@ -255,16 +255,26 @@ export function loadState(): PersistedState {
   return { nodes: [] };
 }
 
+export function saveFocusState(focusSessions: string[], focusMode: boolean) {
+  ensureDirs();
+  const state = loadState();
+  state.focusSessions = focusSessions;
+  state.focusMode = focusMode;
+  atomicWriteJson(STATE_FILE, state);
+}
+
 export function saveState(sessions: Map<string, Session>) {
   ensureDirs();
   const savedState = loadState();
 
-  // Preserve categories, canvases, website nodes, and edges from existing state
+  // Preserve categories, canvases, website nodes, focus state, and edges from existing state
   const state: PersistedState = {
     nodes: [],
     websiteNodes: savedState.websiteNodes || [],
     canvases: savedState.canvases || [],
     categories: savedState.categories || [],
+    focusSessions: savedState.focusSessions || [],
+    focusMode: savedState.focusMode || false,
   };
 
   // Get default canvas ID for fallback

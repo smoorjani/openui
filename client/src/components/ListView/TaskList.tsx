@@ -1,8 +1,9 @@
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useRef } from "react";
 import { ChevronDown, ChevronRight, Plus, Trash2, Edit3, Bot } from "lucide-react";
 import { useStore, type ListSection } from "../../stores/useStore";
 import { TaskItem } from "./TaskItem";
 import { WorkspaceTabs } from "../WorkspaceTabs";
+import { createQuickAgent } from "../../utils/createQuickAgent";
 
 interface TaskListProps {
   selectedNodeId: string | null;
@@ -10,7 +11,7 @@ interface TaskListProps {
 }
 
 export function TaskList({ selectedNodeId, onSelect }: TaskListProps) {
-  const { sessions, listSections, addListSection, updateListSection, removeListSection, updateSession, setAddAgentModalOpen, setNewAgentTargetCategoryId, activeWorkspace } = useStore();
+  const { sessions, listSections, addListSection, updateListSection, removeListSection, updateSession, setAddAgentModalOpen, setNewAgentTargetCategoryId, activeWorkspace, setUiMode } = useStore();
   const [showAddForm, setShowAddForm] = useState(false);
   const [newLabel, setNewLabel] = useState("");
   const [newColor, setNewColor] = useState("#3B82F6");
@@ -18,6 +19,9 @@ export function TaskList({ selectedNodeId, onSelect }: TaskListProps) {
   const [editLabel, setEditLabel] = useState("");
   const [sectionContextMenu, setSectionContextMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [dragOverSection, setDragOverSection] = useState<string | null>(null);
+  const [quickAddSectionId, setQuickAddSectionId] = useState<string | null>(null);
+  const [quickAddName, setQuickAddName] = useState("");
+  const quickAddInputRef = useRef<HTMLInputElement>(null);
 
   const allSessions = Array.from(sessions.entries()).filter(
     ([, s]) => s.agentName !== "Orchestrator"
@@ -140,6 +144,18 @@ export function TaskList({ selectedNodeId, onSelect }: TaskListProps) {
     [sessions, allSessions, updateSession]
   );
 
+  const handleQuickAdd = async (sectionId: string) => {
+    const name = quickAddName.trim();
+    if (!name) return;
+    setQuickAddSectionId(null);
+    setQuickAddName("");
+    const nodeId = await createQuickAgent({ customName: name, categoryId: sectionId });
+    if (nodeId) {
+      setUiMode("focus");
+      onSelect(nodeId);
+    }
+  };
+
   const sectionColors = ["#22C55E", "#3B82F6", "#8B5CF6", "#F97316", "#EC4899", "#EF4444", "#FBBF24", "#14B8A6"];
 
   const renderSection = (section: ListSection) => {
@@ -150,7 +166,7 @@ export function TaskList({ selectedNodeId, onSelect }: TaskListProps) {
       <div key={section.id} className="mb-2">
         {/* Section header */}
         <div
-          className={`flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer select-none transition-colors ${
+          className={`group/section flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer select-none transition-colors ${
             isOver ? "bg-white/10" : "hover:bg-white/5"
           }`}
           onClick={() => handleToggleCollapse(section.id)}
@@ -184,7 +200,38 @@ export function TaskList({ selectedNodeId, onSelect }: TaskListProps) {
             </span>
           )}
           <span className="text-[10px] text-zinc-600 tabular-nums">{items.length}</span>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setQuickAddSectionId(quickAddSectionId === section.id ? null : section.id);
+              setQuickAddName("");
+              setTimeout(() => quickAddInputRef.current?.focus(), 0);
+            }}
+            className="opacity-0 group-hover/section:opacity-100 p-0.5 rounded hover:bg-white/10 transition-all"
+            title="Quick-add agent"
+          >
+            <Plus className="w-3 h-3 text-zinc-500 hover:text-zinc-300" />
+          </button>
         </div>
+
+        {/* Quick-add inline input */}
+        {quickAddSectionId === section.id && (
+          <div className="ml-2 mt-1 mb-1 px-1">
+            <input
+              ref={quickAddInputRef}
+              value={quickAddName}
+              onChange={(e) => setQuickAddName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleQuickAdd(section.id);
+                if (e.key === "Escape") { setQuickAddSectionId(null); setQuickAddName(""); }
+              }}
+              onBlur={() => setTimeout(() => { setQuickAddSectionId(null); setQuickAddName(""); }, 100)}
+              placeholder="Agent name…"
+              className="w-full px-2 py-1 rounded-md bg-canvas border border-border text-white text-xs focus:outline-none focus:border-zinc-500"
+              autoFocus
+            />
+          </div>
+        )}
 
         {/* Tasks */}
         {!section.collapsed && (

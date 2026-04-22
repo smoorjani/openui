@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef } from "react";
-import { Settings2, Plus, X, FileText, RotateCw, CheckCircle, PauseCircle, Trash2, ArrowRight } from "lucide-react";
+import { Settings2, Plus, X, FileText, RotateCw, CheckCircle, PauseCircle, Trash2, ArrowRight, Archive, Minus, Maximize2 } from "lucide-react";
 import { useStore, AgentStatus } from "../stores/useStore";
 import { Terminal } from "./Terminal";
 import { FocusSessionPicker } from "./FocusSessionPicker";
 import { getContextWindowSize } from "../utils/contextWindow";
 import { WorkspaceTabs } from "./WorkspaceTabs";
+import { createQuickAgent } from "../utils/createQuickAgent";
 
 const IN_REVIEW_MAP: Record<string, string> = {
   sprint: "in-review",
@@ -67,7 +68,7 @@ function ContextNote({ nodeId, sessionId, notes }: { nodeId: string; sessionId: 
             if (e.key === "Escape") { setValue(notes || ""); setEditing(false); }
           }}
           placeholder="What is this session for?"
-          rows={2}
+          rows={Math.max(2, value.split("\n").length)}
           className="w-full bg-transparent text-xs text-secondary placeholder-faint resize-none focus:outline-none"
         />
       </div>
@@ -135,6 +136,7 @@ function RemovePopover({
   const removeFocusSession = useStore((s) => s.removeFocusSession);
   const removeSession = useStore((s) => s.removeSession);
   const removeNode = useStore((s) => s.removeNode);
+  const archiveSession = useStore((s) => s.archiveSession);
   const activeWorkspace = useStore((s) => s.activeWorkspace);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -208,6 +210,17 @@ function RemovePopover({
         <PauseCircle className="w-3.5 h-3.5 text-yellow-400" />
         On Hold
       </button>
+      <button
+        onClick={() => {
+          archiveSession(nodeId);
+          removeFocusSession(nodeId);
+          onClose();
+        }}
+        className="w-full px-3 py-1.5 text-left text-xs text-zinc-300 hover:bg-white/5 flex items-center gap-2"
+      >
+        <Archive className="w-3.5 h-3.5 text-zinc-400" />
+        Archive
+      </button>
       <div className="h-px bg-border my-0.5" />
       <button
         onClick={handleDelete}
@@ -227,8 +240,10 @@ export function FocusView() {
   const setFocusSessions = useStore((s) => s.setFocusSessions);
   const sessions = useStore((s) => s.sessions);
   const updateSession = useStore((s) => s.updateSession);
+  const minimizedPanels = useStore((s) => s.minimizedPanels);
+  const toggleMinimizePanel = useStore((s) => s.toggleMinimizePanel);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [activeFocusIndex, setActiveFocusIndex] = useState(0);
+  const [activeFocusNodeId, setActiveFocusNodeId] = useState<string | null>(null);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
   const [refreshKeys, setRefreshKeys] = useState<Record<string, number>>({});
@@ -236,6 +251,9 @@ export function FocusView() {
   const [panelContextMenu, setPanelContextMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null);
   const [showMoveSubmenu, setShowMoveSubmenu] = useState(false);
   const xButtonRefs = useRef<Map<string, HTMLButtonElement | null>>(new Map());
+  const [quickAddOpen, setQuickAddOpen] = useState(false);
+  const [quickAddName, setQuickAddName] = useState("");
+  const quickAddInputRef = useRef<HTMLInputElement>(null);
 
   const listSections = useStore((s) => s.listSections);
   const activeWorkspace = useStore((s) => s.activeWorkspace);
@@ -257,9 +275,14 @@ export function FocusView() {
 
   useEffect(() => {
     const handleCycleFocus = () => {
-      const count = validSessionsRef.current.length;
-      if (count === 0) return;
-      setActiveFocusIndex((prev) => (prev + 1) % count);
+      const all = validSessionsRef.current;
+      const { minimizedPanels } = useStore.getState();
+      const expanded = all.filter((id) => !minimizedPanels.has(id));
+      if (expanded.length === 0) return;
+      setActiveFocusNodeId((prev) => {
+        const idx = prev ? expanded.indexOf(prev) : -1;
+        return expanded[(idx + 1) % expanded.length];
+      });
     };
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.code === "Backquote" && e.ctrlKey) {
@@ -267,6 +290,17 @@ export function FocusView() {
         if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
         e.preventDefault();
         handleCycleFocus();
+      }
+      // Ctrl+= to increase font, Ctrl+- to decrease
+      if (e.ctrlKey && (e.key === "=" || e.key === "+")) {
+        e.preventDefault();
+        const { terminalFontSize, setTerminalFontSize } = useStore.getState();
+        setTerminalFontSize(terminalFontSize + 1);
+      }
+      if (e.ctrlKey && e.key === "-") {
+        e.preventDefault();
+        const { terminalFontSize, setTerminalFontSize } = useStore.getState();
+        setTerminalFontSize(terminalFontSize - 1);
       }
     };
     window.addEventListener("openui:cycle-focus", handleCycleFocus);
@@ -277,19 +311,57 @@ export function FocusView() {
     };
   }, []);
 
-  // Clamp index
+  // Reset active if it's no longer in the valid set
   useEffect(() => {
-    if (activeFocusIndex >= validSessions.length) {
-      setActiveFocusIndex(Math.max(0, validSessions.length - 1));
+    if (activeFocusNodeId && !validSessions.includes(activeFocusNodeId)) {
+      setActiveFocusNodeId(null);
     }
-  }, [validSessions.length, activeFocusIndex]);
+  }, [validSessions, activeFocusNodeId]);
 
   const renderPanel = (nodeId: string, index: number) => {
     const session = sessions.get(nodeId)!;
     const name = session.customName || session.agentName;
     const headerBg = getHeaderBg(session.status);
     const statusLabel = getStatusLabel(session.status);
-    const isActive = index === activeFocusIndex;
+    const isActive = nodeId === activeFocusNodeId;
+    const isMinimized = minimizedPanels.has(nodeId);
+
+    // Minimized: thin vertical strip with rotated name
+    if (isMinimized) {
+      return (
+        <div
+          key={nodeId}
+          onClick={() => toggleMinimizePanel(nodeId)}
+          className={`flex-none w-10 flex flex-col items-center border rounded-lg m-1 overflow-hidden cursor-pointer transition-all border-border hover:border-violet-500/50 ${headerBg} ${
+            dragOverIndex === index && dragIndex !== index ? "opacity-50" : ""
+          }`}
+        >
+          <div className="py-2">
+            <Maximize2 className="w-3.5 h-3.5 text-faint" />
+          </div>
+          <div
+            className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+            style={{ backgroundColor: session.customColor || session.color }}
+          />
+          <div className="flex-1 flex items-center justify-center min-h-0 py-2">
+            <span
+              className="text-xs font-medium text-primary whitespace-nowrap"
+              style={{ writingMode: "vertical-rl", textOrientation: "mixed" }}
+            >
+              {name}
+            </span>
+          </div>
+          <div className="py-2">
+            <span
+              className={`text-[10px] font-medium whitespace-nowrap ${statusLabel.className}`}
+              style={{ writingMode: "vertical-rl", textOrientation: "mixed" }}
+            >
+              {statusLabel.text}
+            </span>
+          </div>
+        </div>
+      );
+    }
 
     return (
       <div
@@ -365,11 +437,16 @@ export function FocusView() {
           </div>
           <div className="flex items-center gap-1">
             <button
+              onClick={(e) => { e.stopPropagation(); toggleMinimizePanel(nodeId); }}
+              className="p-0.5 rounded text-faint hover:text-primary transition-colors"
+              title="Minimize panel"
+            >
+              <Minus className="w-3 h-3" />
+            </button>
+            <button
               onClick={() => {
-                // Restart the server-side session (kills old PTY, re-spawns)
                 fetch(`/api/sessions/${session.sessionId}/restart`, { method: "POST" })
                   .then(() => {
-                    // Small delay for PTY to initialize, then remount terminal
                     setTimeout(() => {
                       setRefreshKeys((prev) => ({ ...prev, [nodeId]: (prev[nodeId] || 0) + 1 }));
                     }, 500);
@@ -449,18 +526,50 @@ export function FocusView() {
             {validSessions.length} session{validSessions.length !== 1 ? "s" : ""} · <span className="text-faint">Ctrl+` to cycle</span>
           </span>
         </div>
-        <button
-          onClick={() => setPickerOpen(true)}
-          className="flex items-center gap-1 px-2 py-1 rounded text-xs text-tertiary hover:text-primary hover:bg-canvas transition-colors"
-        >
-          <Settings2 className="w-3 h-3" />
-          Configure
-        </button>
+        <div className="flex items-center gap-1">
+          {quickAddOpen ? (
+            <input
+              ref={quickAddInputRef}
+              value={quickAddName}
+              onChange={(e) => setQuickAddName(e.target.value)}
+              onKeyDown={async (e) => {
+                if (e.key === "Enter" && quickAddName.trim()) {
+                  const name = quickAddName.trim();
+                  setQuickAddOpen(false);
+                  setQuickAddName("");
+                  const ws = WORKSPACE_OPTIONS.find((w) => w.id === activeWorkspace);
+                  await createQuickAgent({ customName: name, categoryId: ws?.defaultSection });
+                }
+                if (e.key === "Escape") { setQuickAddOpen(false); setQuickAddName(""); }
+              }}
+              onBlur={() => setTimeout(() => { setQuickAddOpen(false); setQuickAddName(""); }, 100)}
+              placeholder="Agent name…"
+              className="w-36 px-2 py-1 rounded-md bg-canvas border border-border text-white text-xs focus:outline-none focus:border-zinc-500"
+              autoFocus
+            />
+          ) : (
+            <button
+              onClick={() => { setQuickAddOpen(true); setTimeout(() => quickAddInputRef.current?.focus(), 0); }}
+              className="flex items-center gap-1 px-2 py-1 rounded text-xs text-tertiary hover:text-primary hover:bg-canvas transition-colors"
+              title="Quick-add agent"
+            >
+              <Plus className="w-3 h-3" />
+            </button>
+          )}
+          <button
+            onClick={() => setPickerOpen(true)}
+            className="flex items-center gap-1 px-2 py-1 rounded text-xs text-tertiary hover:text-primary hover:bg-canvas transition-colors"
+          >
+            <Settings2 className="w-3 h-3" />
+            Configure
+          </button>
+        </div>
       </div>
 
-      {/* Panels — flat equal layout */}
+      {/* Panels — expanded first, minimized grouped on the right */}
       <div className="flex-1 flex overflow-hidden">
-        {validSessions.map((nodeId, index) => renderPanel(nodeId, index))}
+        {validSessions.filter((id) => !minimizedPanels.has(id)).map((nodeId, index) => renderPanel(nodeId, index))}
+        {validSessions.filter((id) => minimizedPanels.has(id)).map((nodeId, index) => renderPanel(nodeId, index))}
       </div>
 
       <FocusSessionPicker open={pickerOpen} onClose={() => setPickerOpen(false)} />

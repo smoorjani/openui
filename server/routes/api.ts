@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { Agent, Session } from "../types";
-import { sessions, createSession, deleteSession, createShellSession, injectPluginDir, broadcastToSession, attachOutputHandler, getGitBranch, DEFAULT_CLAUDE_COMMAND, createWorktreeForBranch, findGitCwd, getRemoteHost, sshExecAsync, REMOTE_HOSTS } from "../services/sessionManager";
-import { loadState, saveState, savePositions, getDataDir, loadCanvases, saveCanvases, migrateCategoriesToCanvases, atomicWriteJson, loadBuffer, getRecentDirectories } from "../services/persistence";
+import { sessions, createSession, deleteSession, createShellSession, resumeSession, injectPluginDir, broadcastToSession, attachOutputHandler, getGitBranch, DEFAULT_CLAUDE_COMMAND, createWorktreeForBranch, findGitCwd, getRemoteHost, sshExecAsync, REMOTE_HOSTS } from "../services/sessionManager";
+import { loadState, saveState, savePositions, getDataDir, loadCanvases, saveCanvases, saveFocusState, migrateCategoriesToCanvases, atomicWriteJson, loadBuffer, getRecentDirectories } from "../services/persistence";
 import { signalSessionReady, getQueueProgress } from "../services/sessionStartQueue";
 import { getTokensForSession, getContextTokens, invalidateContextCache, getTotalTokensForNode } from "../services/costCache";
 import { spawnSync } from "bun";
@@ -559,81 +559,19 @@ apiRoutes.post("/sessions/:sessionId/restart", async (c) => {
     log(`\x1b[38;5;141m[restart]\x1b[0m Restored archived session ${sessionId} into sessions Map`);
   }
 
-  // Kill existing PTY if present so the session can be restarted cleanly
+  // Kill existing PTY if any, so restart always works.
+  // Set a sentinel so the old PTY's onExit handler doesn't interfere.
   if (session.pty) {
-    try { session.pty.kill(); } catch {}
+    const oldPty = session.pty;
     session.pty = null;
+    try { oldPty.kill(); } catch {}
   }
 
-  const startFn = async () => {
-    // Re-check after async yield — auto-resume queue may have started this session
-    if (session.pty) return;
-    const { spawn } = await import("bun-pty");
-    if (session.pty) return;
-    // Use originalCwd so Claude finds the session in the correct project directory.
-    // session.cwd may have drifted to a worktree path during the previous run.
-    const resumeCwd = session.originalCwd || session.cwd;
-    const ptyProcess = spawn(process.env.SHELL || "/bin/bash", [], {
-      name: "xterm-256color",
-      cwd: resumeCwd,
-      env: {
-        ...process.env,
-        TERM: "xterm-256color",
-        OPENUI_SESSION_ID: sessionId,
-        OPENUI_PORT: String(process.env.PORT || 6968),
-      },
-      rows: 30,
-      cols: 120,
-    });
-
-    session.pty = ptyProcess;
-    session.isRestored = false;
-    session.status = "running";
-    session.lastOutputTime = Date.now();
-
-    const resetInterval = setInterval(() => {
-      if (!sessions.has(sessionId) || !session.pty) {
-        clearInterval(resetInterval);
-        return;
-      }
-      session.recentOutputSize = Math.max(0, session.recentOutputSize - 50);
-    }, 500);
-
-    attachOutputHandler(session, ptyProcess);
-
-    // Build the command with resume flag if we have a Claude session ID
-    let finalCommand = injectPluginDir(session.command, session.agentId);
-
-    // For Claude sessions, use --resume to restore the specific session.
-    // If the command already has --resume, that's the canonical ID — use it as-is.
-    // Only inject from claudeSessionId when there's no --resume yet (first resume).
-    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    const existingResume = session.command.match(/--resume\s+([\w-]+)/);
-    if (existingResume) {
-      log(`\x1b[38;5;141m[session]\x1b[0m Using existing --resume ${existingResume[1]} from command`);
-    } else if (session.agentId === "claude" && session.claudeSessionId && UUID_RE.test(session.claudeSessionId)) {
-      const resumeArg = `--resume ${session.claudeSessionId}`;
-      if (finalCommand === "isaac" || finalCommand.startsWith("isaac ")) {
-        finalCommand = finalCommand.replace(/^isaac/, `isaac ${resumeArg}`);
-      } else if (finalCommand.startsWith("llm agent claude")) {
-        finalCommand = finalCommand.replace(/^llm agent claude/, `llm agent claude ${resumeArg}`);
-      } else if (finalCommand.startsWith("claude")) {
-        finalCommand = finalCommand.replace(/^claude(\s|$)/, `claude ${resumeArg}$1`);
-      }
-      // Persist --resume into the command so future restarts use the correct ID
-      session.command = session.command.replace(/^(isaac|llm agent claude|claude)/, `$1 ${resumeArg}`);
-      log(`\x1b[38;5;141m[session]\x1b[0m Resuming Claude session: ${session.claudeSessionId} (persisted to command)`);
-    }
-
-    setTimeout(() => {
-      ptyProcess.write(`${finalCommand}\r`);
-    }, 300);
-
-    log(`\x1b[38;5;141m[session]\x1b[0m Restarted ${sessionId}`);
-  };
-
-  // Start immediately -- the queue is only for mass auto-resume at startup
-  startFn();
+  // Use resumeSession which handles PTY spawn, onExit, resume logic, and status broadcast
+  const success = await resumeSession(sessionId);
+  if (!success) {
+    return c.json({ error: "Failed to restart session" }, 500);
+  }
 
   return c.json({ success: true });
 });
@@ -1746,7 +1684,7 @@ apiRoutes.post("/sessions/:sessionId/write", async (c) => {
   const { message } = await c.req.json();
   if (!message) return c.json({ error: "message is required" }, 400);
 
-  session.pty.write(message + "\n");
+  session.pty.write(message + "\r");
   return c.json({ success: true });
 });
 
@@ -1792,6 +1730,12 @@ apiRoutes.get("/settings", (c) => {
 apiRoutes.post("/settings", async (c) => {
   const body = await c.req.json();
   saveSettings(body);
+  return c.json({ success: true });
+});
+
+apiRoutes.post("/focus-state", async (c) => {
+  const { focusSessions, focusMode } = await c.req.json();
+  saveFocusState(focusSessions || [], focusMode || false);
   return c.json({ success: true });
 });
 
