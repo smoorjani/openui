@@ -18,7 +18,10 @@ export async function createQuickAgent(options: {
 
   const cwd = lastCwd || launchCwd;
   const cliMode = lastCliMode || "claude";
-  const command = cliMode === "isaac" ? "isaac" : agent.command;
+  const command =
+    agent.id === "claude"
+      ? cliMode === "isaac" ? "isaac" : "claude"
+      : agent.command;
 
   const nodeId = `node-${Date.now()}-0`;
 

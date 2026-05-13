@@ -815,7 +815,7 @@ function injectSkipPermissions(command: string, agentId: string): string {
   const settings = loadSettings();
   if (!settings.skipPermissions) return command;
   const parts = command.split(/\s+/);
-  if (parts[0] === "isaac") {
+  if (parts[0] === "isaac" || parts[0] === "claude") {
     parts.splice(1, 0, "--dangerously-skip-permissions");
     return parts.join(" ");
   }
@@ -884,10 +884,11 @@ function buildStartCommand(session: Session, initialPrompt?: string): string {
   if (initialPrompt) {
     prompt = prompt ? `${prompt}\\n${initialPrompt}` : initialPrompt;
   }
-  let cmd = "isaac";
+  const binary = session.command?.split(/\s+/)[0] || "isaac";
+  let cmd = binary;
   if (prompt) {
     const escaped = prompt.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\$/g, "\\$").replace(/`/g, "\\`");
-    cmd = `isaac "${escaped}"`;
+    cmd = `${binary} "${escaped}"`;
   }
   return buildFinalCommand(cmd, session);
 }
@@ -897,12 +898,12 @@ function buildResumeCommand(session: Session): string {
   let baseCmd = session.command.replace(/\s*--resume\s+[\w-]*/, "").replace(/\s*resume\s+"[^"]*"/, "").trim();
 
   if (session.agentId === "claude") {
-    if (session.customName) {
-      // Name-based resume: isaac --resume "Custom Name"
-      baseCmd = baseCmd.replace(/^(isaac)(\s|$)/, `$1 --resume "${session.customName}"$2`);
+    const binary = baseCmd.match(/^(isaac|claude)\b/)?.[1];
+    if (binary === "isaac" && session.customName) {
+      // Name-based resume is isaac-only.
+      baseCmd = baseCmd.replace(/^isaac(\s|$)/, `isaac --resume "${session.customName}"$1`);
     } else if (session.claudeSessionId && UUID_RE.test(session.claudeSessionId)) {
-      // UUID fallback: isaac --resume <uuid>
-      baseCmd = baseCmd.replace(/^(isaac)(\s|$)/, `$1 --resume ${session.claudeSessionId}$2`);
+      baseCmd = baseCmd.replace(/^(isaac|claude)(\s|$)/, `$1 --resume ${session.claudeSessionId}$2`);
     }
   }
 
